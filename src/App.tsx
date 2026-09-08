@@ -125,6 +125,7 @@ export const App: React.FC = () => {
         return next
       })
     } catch (err) {
+      if (seq !== refreshSeqRef.current) return // 陈旧失败不得在新请求成功后弹横幅
       console.error('Failed to load notes:', err)
       setErrorBanner('加载便签列表失败：' + toErrMsg(err))
     }
@@ -357,6 +358,26 @@ export const App: React.FC = () => {
       dismiss: normalizeShortcutSetting(settings?.shortcutDismiss || 'Escape'),
     }),
     [settings?.shortcutNewNote, settings?.shortcutBackToSearch, settings?.shortcutDismiss]
+  )
+
+  // 应用级保留快捷键：编辑器正文中命中时必须放行给 window 全局处理器（Editor 的 handleDOMEvents 消费）。
+  // 不硬编码 ESCAPE：输入法转换中 Escape 是系统取消键，无条件放行会造成误返回；
+  // 需要 Escape 在正文生效时由用户把 dismiss 配置为 Escape（此时 App 分支 2 承接）
+  const reservedShortcuts = useMemo(() => {
+    const set = new Set<string>()
+    if (shortcutCombos.back) set.add(shortcutCombos.back)
+    if (shortcutCombos.newNote) set.add(shortcutCombos.newNote)
+    if (shortcutCombos.dismiss) set.add(shortcutCombos.dismiss)
+    return set
+  }, [shortcutCombos])
+
+  const isAppReservedShortcut = useCallback(
+    (e: KeyboardEvent): boolean => {
+      if (e.isComposing || e.keyCode === 229) return false // IME 进行中绝不拦截
+      const combo = normalizeCombo(e)
+      return combo !== '' && reservedShortcuts.has(combo)
+    },
+    [reservedShortcuts]
   )
 
   // Global Keyboard Handlers
@@ -770,6 +791,7 @@ export const App: React.FC = () => {
             }
           }}
           backShortcutText={settings?.shortcutBackToSearch || 'Ctrl+E'}
+          isAppReservedShortcut={isAppReservedShortcut}
         />
       )}
 

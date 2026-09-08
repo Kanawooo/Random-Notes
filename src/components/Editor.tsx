@@ -58,6 +58,23 @@ interface EditorProps {
   onOpenTagModal: () => void
   onRegisterFlush?: (flush: () => Promise<boolean>) => () => void
   backShortcutText?: string
+  /** 应用级保留快捷键判定（App 全局处理器同源）：命中时编辑器必须放行给 window，
+   *  否则 tiptap Code 的 Mod-e 与 ProseMirror captureKeyDown 对 Escape 的无条件
+   *  preventDefault 会被 App 的 defaultPrevented 早退当成有意让位，快捷键在正文内失效 */
+  isAppReservedShortcut?: (e: KeyboardEvent) => boolean
+}
+
+// 编辑关键键：即使用户把它们配置成应用快捷键，也优先保编辑语义（与修复前行为一致，防修复引入回归）；
+// Mod-[biyz] 对应 Bold/Italic/History 绑定与 capturekeys 对原生默认行为的抑制
+const EDITOR_CRITICAL_KEYS = new Set([
+  'ENTER', 'TAB', 'BACKSPACE', 'DELETE',
+  'ARROWUP', 'ARROWDOWN', 'ARROWLEFT', 'ARROWRIGHT',
+  'HOME', 'END', 'PAGEUP', 'PAGEDOWN'
+])
+function isEditorCriticalShortcut(e: KeyboardEvent): boolean {
+  const key = e.key.toUpperCase()
+  if (EDITOR_CRITICAL_KEYS.has(key)) return true
+  return (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && ['B', 'I', 'Y', 'Z'].includes(key)
 }
 
 export const Editor: React.FC<EditorProps> = ({
@@ -66,7 +83,8 @@ export const Editor: React.FC<EditorProps> = ({
   onBack,
   onNoteUpdated,
   onOpenTagModal,
-  onRegisterFlush
+  onRegisterFlush,
+  isAppReservedShortcut
 }) => {
   const [title, setTitle] = useState(note.title)
   const [titleManuallyEdited, setTitleManuallyEdited] = useState(note.title_manually_edited)
@@ -78,6 +96,12 @@ export const Editor: React.FC<EditorProps> = ({
   const titleRef = useRef(title)
   const titleManuallyEditedRef = useRef(titleManuallyEdited)
   const isPinnedRef = useRef(isPinned)
+
+  // useEditor 不重建实例，editorProps 闭包经 ref 取最新判定函数（快捷键设置热更新生效）
+  const isAppReservedRef = useRef(isAppReservedShortcut)
+  useEffect(() => {
+    isAppReservedRef.current = isAppReservedShortcut
+  }, [isAppReservedShortcut])
 
   // 保存回写不得覆盖输入中的标题：组件已用 key={note.id} 重挂载，仅 id 变化时重置本地 state（防御分支）；
   // noteRef 每渲染同步最新对象（粘贴守卫、各 handler 依赖）
@@ -182,6 +206,16 @@ export const Editor: React.FC<EditorProps> = ({
       })
     },
     editorProps: {
+      handleDOMEvents: {
+        keydown(_view, event) {
+          const e = event as KeyboardEvent
+          // 返回 true = 跳过 ProseMirror 的 keymap/captureKeyDown（不执行命令、不 preventDefault），
+          // 事件原样冒泡至 App 全局处理器；仅对应用保留快捷键放行
+          if (!isAppReservedRef.current?.(e)) return false
+          if (isEditorCriticalShortcut(e)) return false
+          return true
+        }
+      },
       transformPastedHTML(html) {
         return sanitizePastedHtml(html)
       },
