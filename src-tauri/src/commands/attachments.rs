@@ -23,8 +23,9 @@ pub fn attachments_add_from_clipboard(
     state.attachment_service.save_from_clipboard(&note_id)
 }
 
-/// 仓库首个 async 命令：base64 解码、sha256、图片尺寸解码与写盘在异步线程池执行，不阻塞主线程；
-/// 用 owned AppHandle 而非 State<'_> 参数，规避 async + 生命周期的编译风险
+/// 仓库首批 async 命令之一：入口校验与 base64 解码在 async 上下文完成，
+/// sha256/图片解码/写盘等 CPU+IO 密集工作移交 blocking 池（spawn_blocking），
+/// 不在 tokio worker 线程上同步阻塞；用 owned AppHandle 而非 State<'_> 参数，规避 async + 生命周期的编译风险
 #[tauri::command]
 pub async fn attachments_add_from_bytes(
     app: AppHandle,
@@ -39,7 +40,11 @@ pub async fn attachments_add_from_bytes(
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data.trim())
         .map_err(|_| "粘贴数据解析失败".to_string())?;
-    state.attachment_service.save_image_bytes(&note_id, &bytes)
+    let svc = state.attachment_service.clone();
+    drop(state);
+    tauri::async_runtime::spawn_blocking(move || svc.save_image_bytes(&note_id, &bytes))
+        .await
+        .map_err(|e| format!("附件处理任务执行失败: {}", e))?
 }
 
 #[tauri::command]

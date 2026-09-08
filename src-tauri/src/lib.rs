@@ -85,8 +85,25 @@ pub fn run() {
     let (db_service, read_only_recovery_error) = match DbService::new(db_path.clone()) {
         Ok(service) => (Arc::new(service), None),
         Err(e) => {
-            // Read-only recovery mode: create an in-memory SQLite connection for fallback
-            let mem_conn = rusqlite::Connection::open_in_memory().unwrap();
+            // 只读恢复模式：内存库兑底。迁移失败时降级继续而非 exit——
+            // 恢复横幅是用户救数据的唯一入口，exit 会让 GUI 静默消失
+            let mem_conn = match rusqlite::Connection::open_in_memory() {
+                Ok(c) => c,
+                Err(e2) => {
+                    eprintln!("[fatal] 创建只读恢复内存数据库失败: {} (原始错误: {})", e2, e);
+                    std::process::exit(1);
+                }
+            };
+            let mut mem_conn = mem_conn;
+            if let Err(e2) = mem_conn.execute_batch("PRAGMA foreign_keys = ON;") {
+                eprintln!("[warn] 只读恢复内存库 PRAGMA 初始化失败，降级继续: {}", e2);
+            }
+            if let Err(e2) = crate::db::migrations::run_migrations(&mut mem_conn) {
+                eprintln!(
+                    "[warn] 只读恢复内存库迁移失败，降级继续（读命令将报 no such table）: {} (原始错误: {})",
+                    e2, e
+                );
+            }
             let fallback_db = DbService::from_connection(mem_conn, db_path);
             (
                 Arc::new(fallback_db),

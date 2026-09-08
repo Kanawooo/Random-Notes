@@ -13,6 +13,15 @@ const ALLOWED_KEYS: &[&str] = &[
     "windowBounds",
 ];
 
+// 恢复模式内存库跑迁移后 settings 表存在，无守卫则写入“成功”但重启即丢（数据欺骗），
+// 与 notes/tags/attachments 命令的既有局部守卫模式一致
+fn check_write_permission(state: &AppState) -> Result<(), String> {
+    if let Some(err) = &state.read_only_recovery_error {
+        return Err(format!("系统处于只读保护模式，禁止写入或修改数据：{}", err));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn settings_get_all(state: State<AppState>) -> Result<AppSettings, String> {
     Ok(state.settings_service.get_all())
@@ -33,6 +42,7 @@ pub fn settings_update(
     key: String,
     value: serde_json::Value,
 ) -> Result<AppSettings, String> {
+    check_write_permission(&state)?;
     if !ALLOWED_KEYS.contains(&key.as_str()) {
         return Err(format!("不支持的设置项: {}", key));
     }
@@ -78,6 +88,7 @@ pub fn settings_update_action_shortcuts(
     shortcut_back_to_search: String,
     shortcut_dismiss: String,
 ) -> Result<AppSettings, String> {
+    check_write_permission(&state)?;
     state.settings_service.update_action_shortcuts(
         &shortcut_new_note,
         &shortcut_back_to_search,

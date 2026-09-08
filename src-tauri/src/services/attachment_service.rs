@@ -92,13 +92,14 @@ impl AttachmentService {
                 .map_err(|e| format!("创建附件目录失败: {}", e))?;
         }
 
-        // 2. Acquire DB lock, write file and INSERT while holding the lock
+        // 2. 锁外写盘（最大 30MB，持锁写会阻塞全部 DB 命令），再拿锁 INSERT；
+        //    插入失败时删除刚写入的文件回滚
+        fs::write(&target_path, data).map_err(|e| format!("保存图片失败: {}", e))?;
+
         let conn = self
             .conn
             .lock()
             .map_err(|_| "Database lock failed".to_string())?;
-
-        fs::write(&target_path, data).map_err(|e| format!("保存图片失败: {}", e))?;
 
         if let Err(e) = conn.execute(
             "INSERT INTO attachments (id, note_id, relative_path, mime_type, byte_size, width, height, sha256, created_at)
