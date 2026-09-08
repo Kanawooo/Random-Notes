@@ -203,7 +203,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       await refreshTagsList()
       onTagsChanged?.()
     } catch (err) {
-      setTagError(err instanceof Error ? err.message : '创建标签失败')
+      setTagError(`创建标签失败: ${toErrMsg(err)}`)
     }
   }
 
@@ -222,7 +222,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       await refreshTagsList()
       onTagsChanged?.()
     } catch (err) {
-      setTagError(err instanceof Error ? err.message : '重命名标签失败')
+      setTagError(`重命名标签失败: ${toErrMsg(err)}`)
     }
   }
 
@@ -232,7 +232,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       await refreshTagsList()
       onTagsChanged?.(id)
     } catch (err) {
-      setTagError(err instanceof Error ? err.message : '删除标签失败')
+      setTagError(`删除标签失败: ${toErrMsg(err)}`)
     }
   }
 
@@ -282,7 +282,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       }
     } catch (err) {
       setBackupStatus('error')
-      setBackupMessage(err instanceof Error ? err.message : '导出备份失败')
+      setBackupMessage(`导出备份失败: ${toErrMsg(err)}`)
     } finally {
       setBackupLoading(false)
     }
@@ -299,7 +299,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       }
     } catch (err) {
       setBackupStatus('error')
-      setBackupMessage(err instanceof Error ? err.message : '选择备份包失败')
+      setBackupMessage(`选择备份包失败: ${toErrMsg(err)}`)
     } finally {
       setBackupLoading(false)
     }
@@ -328,7 +328,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       onDataRestored?.()
     } catch (err) {
       setBackupStatus('error')
-      setBackupMessage(err instanceof Error ? err.message : '恢复备份失败')
+      setBackupMessage(`恢复备份失败: ${toErrMsg(err)}`)
     } finally {
       setIsRestoring(false)
     }
