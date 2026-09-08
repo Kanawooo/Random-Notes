@@ -362,7 +362,7 @@ export const App: React.FC = () => {
 
   // 应用级保留快捷键：编辑器正文中命中时必须放行给 window 全局处理器（Editor 的 handleDOMEvents 消费）。
   // 不硬编码 ESCAPE：输入法转换中 Escape 是系统取消键，无条件放行会造成误返回；
-  // 需要 Escape 在正文生效时由用户把 dismiss 配置为 Escape（此时 App 分支 2 承接）
+  // 需要 Escape 在正文生效时由用户把 dismiss 配置为 Escape（由 App 分支 1 的 bare-Escape 段承接）
   const reservedShortcuts = useMemo(() => {
     const set = new Set<string>()
     if (shortcutCombos.back) set.add(shortcutCombos.back)

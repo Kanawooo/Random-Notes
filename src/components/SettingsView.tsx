@@ -136,7 +136,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       }
     } catch (err) {
       setHotkeySuccess(false)
-      setHotkeyMessage(err instanceof Error ? err.message : '热键配置失败')
+      setHotkeyMessage(`热键配置失败: ${toErrMsg(err)}`)
     }
   }
 
