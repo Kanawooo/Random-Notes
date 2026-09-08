@@ -704,6 +704,11 @@ export const App: React.FC = () => {
             onToggleCheck={handleToggleCheck}
             onFocusIndex={setFocusedIndex}
             searchQuery={searchQuery}
+            newNoteShortcut={
+              scope === 'active' && !selectedTagId && !recoveryStatus
+                ? settings?.shortcutNewNote || 'Ctrl+N'
+                : undefined
+            }
           />
         </div>
       )}

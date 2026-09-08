@@ -10,6 +10,8 @@ interface NoteListProps {
   onToggleCheck: (id: string) => void
   onFocusIndex: (index: number) => void
   searchQuery?: string
+  // 新建快捷键展示值；undefined 表示当前场景不可行动（回收站/标签筛选/只读恢复），不渲染新建提示
+  newNoteShortcut?: string
 }
 
 function formatDate(isoStr: string): string {
@@ -40,7 +42,8 @@ export const NoteList: React.FC<NoteListProps> = ({
   onSelectNote,
   onToggleCheck,
   onFocusIndex,
-  searchQuery
+  searchQuery,
+  newNoteShortcut
 }) => {
   if (notes.length === 0) {
     return (
@@ -52,7 +55,9 @@ export const NoteList: React.FC<NoteListProps> = ({
               按 Enter 键以 &ldquo;{searchQuery.trim()}&rdquo; 为标题新建便签
             </p>
           ) : (
-            <p className="empty-create-hint">按 Enter 或快捷键创建新便签</p>
+            newNoteShortcut && (
+              <p className="empty-create-hint">按 {newNoteShortcut} 创建新便签</p>
+            )
           )}
         </div>
       </div>
