@@ -1,63 +1,51 @@
-# 随笺 (Suijian) - Tauri 2 / Rust Windows 桌面便签应用
+# 随笺 (Suijian) — Windows 桌面便签
 
-随笺是一款专为 Windows 设计的轻量、优雅、高响应的桌面便签与随手记应用。本项目基于 Tauri 2 + Rust + React 18 + TypeScript + Tiptap 构建，具备更快的启动速度、更低的常驻内存占用与极致的数据可靠性。
+按 `Ctrl+Space` 呼出，随手记，写完自动保存，收起即走。下次打开，内容都在。
 
----
+## 能做什么
 
-## 核心特性与架构
+- 富文本便签：加粗、斜体、列表、待办、代码、链接、图片（截图直接粘贴）
+- 全文搜索，几千条也能秒出结果
+- 标签分类、归档、回收站
+- 自动保存：输入停顿约 300 毫秒即写入磁盘；保存失败会明确提示并可重试，不会静默丢内容
+- 备份导出为 zip；恢复前先展示包内清单供核对，并自动做安全快照
+- 数据库异常时自动进入只读模式，保住数据供导出
 
-### 1. 技术栈
-- **后端**：Tauri 2.x、Rust 2021 Edition、rusqlite（集成 SQLite 3 与 FTS5 全文检索）、rfd 原生文件对话框
-- **前端**：React 18、TypeScript、Vite 6、Tiptap 富文本编辑器、Vanilla CSS（高质感 Windows 现代暗调与微质感光影）
-- **包管理与工具链**：pnpm、Vitest、Testing Library、ESLint 9、Cargo / Clippy / Rustfmt
+## 安装
 
-### 2. 数据可靠性与零丢失自动保存
-- **串行化自动保存队列**：在 `useAutoSave` 中建立严格的 FIFO 保存队列与 300ms 防抖机制，自动追踪最新 revision，确保草稿状态、标题及正文按序写入数据库，彻底杜绝多并发保存造成的竞态丢失。
-- **窗口隐藏与退出握手**：失焦收起面板、全局快捷键切换、系统托盘右键退出或窗口关闭时，前端与 Rust 后端进行原子握手。在保存未落盘之前绝不静默隐藏或退出；若保存失败，前端界面驻留错误提示与“重试保存”操作，确保数据安全。
-- **版本冲突保护**：基于 SQLite 单事务与 `revision` 字段乐观并发控制，防止陈旧闭包数据覆盖最新内容。
+- 安装版 `Random-Notes-x.y.z-Setup.exe`：安装后开始菜单出现“随笺”
+- 单文件版 `Random-Notes-x.y.z-Portable.exe`：双击即用，免安装
+- 需要 Windows 10/11 x64；WebView2 运行时系统一般自带，安装版缺失时会自动安装
 
-### 3. 安全备份与两阶段恢复
-- **严格 Zip 检查与防炸弹**：校验 Zip Slip 路径逃逸（拒绝包含 `..`、绝对路径或盘符冒号）、单条目 25MB 上限、总解压 500MB 防炸弹、条目与 manifest 1-to-1 双向对齐。
-- **两阶段恢复确认**：先通过系统对话框选择备份文件进行无损完整性解析，在界面展示便签数、标签数、附件数与文件大小供用户核验；用户确认后，在单事务中完成数据库与附件的安全原子替换，并在操作前自动创建本地回滚快照。
-- **只读恢复保护模式**：若数据库检测到异常或恢复未完成，应用自动降级为只读诊断模式，提示用户查看数据目录，防止损坏数据被二次污染。
+## 数据在哪里
 
-### 4. 品牌与视觉
-- 统一使用品牌图标（钴蓝圆角卡片、纸白折角主体与纯黑精细墨迹勾），覆盖 Windows 托盘可见图标、主程序 EXE、NSIS 安装包及桌面快捷方式。
+`%APPDATA%\com.suijian.notes`（数据库、附件、备份都在此）。换机时**退出随笺后**整目录拷走即可。
+试用可用 `--user-data-dir <路径>` 参数开独立数据（安装版对 `随笺.exe`，单文件版对下载的 exe 本身）。
+请勿同时运行多个共用同一数据目录的随笺，存在互相覆盖风险。
 
----
+## 快捷键
 
-## 开发与构建指南
+- 呼出/收起：`Ctrl+Space`（系统级，其他软件里也能唤起）
+- 新建 `Ctrl+N`、返回搜索 `Ctrl+E`、收起 `Escape`（窗口在前台时生效，可在设置页改）
+- 与编辑器快捷键（如 `Ctrl+B` 加粗）冲突时，正文内以你设置的为准；设置页录入时即时提示冲突
 
-### 环境要求
-- Windows 10/11 x64
-- Node.js >= 18，pnpm >= 9
-- Rust >= 1.77.2 (MSVC 工具链)
-- WebView2 运行时
+## 开发
 
-### 常用命令
+技术栈 Tauri 2 + Rust + React 18 + TypeScript + Tiptap；环境需 Node ≥ 18、pnpm ≥ 9、Rust（MSVC）。
+
 ```bash
-# 1. 进入项目目录
-cd suijian-tauri
-
-# 2. 安装依赖
 pnpm install
-
-# 3. 前端质量门禁
-pnpm lint        # ESLint 检查
-pnpm typecheck   # TypeScript 类型检查
-pnpm test        # Vitest 单元与组件测试
-pnpm build       # Vite 生产构建
-
-# 4. Rust 后端门禁
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-
-# 5. 开发调试运行
-pnpm tauri dev
-
-# 6. 生产打包构建 (Release)
-pnpm tauri build
+pnpm tauri dev        # 开发运行
+pnpm build            # 前端构建（tsc + vite）
+pnpm typecheck        # 类型检查
+pnpm lint             # ESLint
+pnpm test             # Vitest
+cd src-tauri && cargo test
+pnpm tauri build      # 打包：exe 与 NSIS 安装包
 ```
 
-打包产物将自动生成于 `src-tauri/target/release/` 以及 `src-tauri/target/release/bundle/nsis/`。
+产物在 `src-tauri/target/release/`（exe）与 `src-tauri/target/release/bundle/nsis/`（安装包）。
+
+## 许可
+
+MIT，见 LICENSE。
