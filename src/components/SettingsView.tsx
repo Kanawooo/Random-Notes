@@ -22,7 +22,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [backSearchInput, setBackSearchInput] = useState('')
   const [dismissInput, setDismissInput] = useState('')
   const [launchAtLogin, setLaunchAtLogin] = useState(false)
-  const [autoHideOnBlur, setAutoHideOnBlur] = useState(true)
+  const [autoHideOnBlur, setAutoHideOnBlur] = useState(false)
 
   const [hotkeyMessage, setHotkeyMessage] = useState<string | null>(null)
   const [hotkeySuccess, setHotkeySuccess] = useState<boolean>(true)

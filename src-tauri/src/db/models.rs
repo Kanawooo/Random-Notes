@@ -131,7 +131,7 @@ impl Default for AppSettings {
             shortcut_back_to_search: "Ctrl+E".to_string(),
             shortcut_dismiss: "Escape".to_string(),
             launch_at_login: false,
-            auto_hide_on_blur: true,
+            auto_hide_on_blur: false,
             window_bounds: None,
         }
     }
