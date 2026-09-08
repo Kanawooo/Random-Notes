@@ -459,6 +459,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div>
             <div>新建便签快捷键</div>
             <div className="setting-desc">在任意界面快速新建空白便签</div>
+            {scWarnings.newNote && (
+              <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '4px' }}>
+                {scWarnings.newNote}
+              </div>
+            )}
           </div>
           <input
             type="text"
@@ -471,16 +476,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             aria-label="新建便签快捷键"
           />
         </div>
-        {scWarnings.newNote && (
-          <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '-4px', marginBottom: '8px' }}>
-            {scWarnings.newNote}
-          </div>
-        )}
 
         <div className="setting-row">
           <div>
             <div>返回搜索列表快捷键</div>
             <div className="setting-desc">在编辑器中快速保存并返回搜索主界面</div>
+            {scWarnings.back && (
+              <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '4px' }}>
+                {scWarnings.back}
+              </div>
+            )}
           </div>
           <input
             type="text"
@@ -493,16 +498,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             aria-label="返回搜索列表快捷键"
           />
         </div>
-        {scWarnings.back && (
-          <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '-4px', marginBottom: '8px' }}>
-            {scWarnings.back}
-          </div>
-        )}
 
         <div className="setting-row">
           <div>
             <div>隐藏/收起窗口快捷键</div>
             <div className="setting-desc">关闭面板并驻留系统托盘（默认 Escape）</div>
+            {scWarnings.dismiss && (
+              <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '4px' }}>
+                {scWarnings.dismiss}
+              </div>
+            )}
           </div>
           <input
             type="text"
@@ -515,11 +520,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             aria-label="隐藏窗口快捷键"
           />
         </div>
-        {scWarnings.dismiss && (
-          <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '-4px', marginBottom: '8px' }}>
-            {scWarnings.dismiss}
-          </div>
-        )}
 
         <div style={{ display: 'flex', gap: '8px', marginTop: '12px', alignItems: 'center' }}>
           <button type="button" className="btn btn-primary" onClick={handleSaveActionShortcuts}>
