@@ -732,7 +732,6 @@ export const App: React.FC = () => {
       {/* 视图三：设置页面 */}
       {view === 'settings' && (
         <SettingsView
-          onClose={handleBackToSearch}
           onSettingsChanged={(newSettings) => setSettings(newSettings)}
           onTagsChanged={handleTagsChangedInSettings}
           onBeforeRestore={async () => {

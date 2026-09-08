@@ -3,7 +3,6 @@ import { suijian } from '../lib/api'
 import type { AppSettings, Tag, BackupInspectResult } from '../types'
 
 interface SettingsViewProps {
-  onClose: () => void
   onSettingsChanged?: (settings: AppSettings) => void
   onTagsChanged?: (deletedTagId?: string) => void
   onDataRestored?: () => void
@@ -11,7 +10,6 @@ interface SettingsViewProps {
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
-  onClose,
   onSettingsChanged,
   onTagsChanged,
   onDataRestored,
@@ -314,11 +312,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     <div className="settings-view">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
         <h2 style={{ fontSize: '16px', fontWeight: 700 }}>设置</h2>
-        {onClose && (
-          <button type="button" className="btn" onClick={onClose}>
-            ← 返回搜索 ({backSearchInput || 'Ctrl+E'})
-          </button>
-        )}
       </div>
 
       {/* 全局呼出热键 */}
