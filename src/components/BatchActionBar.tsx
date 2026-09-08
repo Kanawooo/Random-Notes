@@ -25,22 +25,44 @@ export const BatchActionBar: React.FC<BatchActionBarProps> = ({
   onBatchDeletePermanently,
   onEmptyTrash
 }) => {
-  if (selectedCount === 0 && scope !== 'trash') {
+  if (totalCount === 0) {
     return null
+  }
+
+  // 键盘守卫：search 视图全局 Enter/Space 处理器会劫持按钮激活（仅排除 INPUT/TEXTAREA）；
+  // React 合成事件先于 window 监听器，preventDefault 后 App.tsx 的 defaultPrevented 早退生效
+  const handleSelectAllKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      onToggleSelectAll()
+    }
   }
 
   return (
     <div className="batch-action-bar">
       <div className="batch-left">
-        <label className="batch-select-all-label">
-          <input
-            type="checkbox"
-            checked={allSelected && totalCount > 0}
-            onChange={onToggleSelectAll}
-            className="batch-checkbox"
-          />
-          <span>全选当前 ({totalCount})</span>
-        </label>
+        {selectedCount === 0 ? (
+          // 未选中时以按钮形态提供全选入口（无 checkbox role，不改变列表勾选框的 DOM 序）；
+          // 与 checkbox 形态同一时刻只渲染一种，保证文本选择器唯一命中
+          <button
+            type="button"
+            className="batch-text-btn"
+            onClick={onToggleSelectAll}
+            onKeyDown={handleSelectAllKeyDown}
+          >
+            全选当前 ({totalCount})
+          </button>
+        ) : (
+          <label className="batch-select-all-label">
+            <input
+              type="checkbox"
+              checked={allSelected && totalCount > 0}
+              onChange={onToggleSelectAll}
+              className="batch-checkbox"
+            />
+            <span>全选当前 ({totalCount})</span>
+          </label>
+        )}
 
         {selectedCount > 0 && (
           <>
