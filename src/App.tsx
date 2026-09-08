@@ -346,9 +346,14 @@ export const App: React.FC = () => {
 
   const isAppReservedShortcut = useCallback(
     (e: KeyboardEvent): boolean => {
-      if (e.isComposing || e.keyCode === 229) return false // IME 进行中绝不拦截
       const combo = normalizeCombo(e)
-      return combo !== '' && reservedShortcuts.has(combo)
+      if (combo === '') return false
+      // 带修饰键的功能组合不受 sticky isComposing 吞并（与 handleKeyDown 的 imeBlocked 收紧同源）。
+      // IME 组合中真实被拦截的键下发 Process/229，归一化为 'CTRL+PROCESS'，
+      // 不可能命中 reservedShortcuts（成员全部来自后端校验过的归一化串），天然交还编辑器
+      if (e.ctrlKey || e.altKey || e.metaKey) return reservedShortcuts.has(combo)
+      if (e.isComposing || e.keyCode === 229) return false // 裸键：IME 进行中绝不拦截
+      return reservedShortcuts.has(combo)
     },
     [reservedShortcuts]
   )
@@ -356,7 +361,15 @@ export const App: React.FC = () => {
   // Global Keyboard Handlers
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.isComposing || e.defaultPrevented) {
+      if (e.defaultPrevented) {
+        return
+      }
+      // IME 守卫收紧（双向审查 H1 裁定）：229/Process 一律交还输入法；
+      // sticky isComposing（组合已结束但标志未清，WebView2/部分 IME 真实病理态）
+      // 不再吞带 Ctrl/Alt/Super 的功能键组合——“配置的键就该管用”（用户拍板），
+      // 裸键无修饰仍全部让位 IME（候选翻页 Shift/Enter 等路径与收紧前逐键相同）
+      const imeBlocked = e.keyCode === 229 || (e.isComposing && !(e.ctrlKey || e.altKey || e.metaKey))
+      if (imeBlocked) {
         return
       }
 
