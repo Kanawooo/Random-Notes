@@ -146,8 +146,12 @@ export const App: React.FC = () => {
     setView('settings')
   }, [])
 
-  const handleBackToSearchRef = useRef(handleBackToSearch)
-  handleBackToSearchRef.current = handleBackToSearch
+  // 供一次性注册的 Tauri 事件回调读取最新视图/刷新函数，避免捕获首帧陈旧闭包
+  const viewRef = useRef(view)
+  viewRef.current = view
+
+  const refreshNotesRef = useRef(refreshNotes)
+  refreshNotesRef.current = refreshNotes
 
   const handleCreateNoteRef = useRef(handleCreateNote)
   handleCreateNoteRef.current = handleCreateNote
@@ -199,7 +203,11 @@ export const App: React.FC = () => {
         // Register all Tauri IPC events and await registration promises
         const [unFocus, unReqNew, unCreated, unHide, unQuit] = await Promise.all([
           suijian.events.onFocusSearch(() => {
-            handleBackToSearchRef.current()
+            // 保持隐藏前的视图；仅在搜索页时聚焦搜索框并刷新列表
+            if (viewRef.current === 'search') {
+              setFocusTrigger((p) => p + 1)
+              refreshNotesRef.current()
+            }
           }),
           suijian.events.onRequestNewNote(() => {
             handleCreateNoteRef.current(true)
