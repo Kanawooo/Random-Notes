@@ -12,7 +12,7 @@ import { sanitizePastedHtml } from '../lib/sanitize'
 import { toAttachmentDisplaySrc } from '../lib/attachmentSrc'
 import { useAutoSave } from '../hooks/useAutoSave'
 import { UiIcon } from './UiIcon'
-import type { Note, Tag } from '../types'
+import type { Attachment, Note, Tag } from '../types'
 
 // WebView2 只拦截 http://suijian-attachment.localhost/<id> 形式请求；
 // 文档 JSON 保持 canonical 的 suijian-attachment://<id>，仅在渲染时转换
@@ -30,6 +30,24 @@ const AttachmentImage = Image.extend({
   inline: false,
   allowBase64: false
 })
+
+// FileReader data URL → 纯 base64（标准字母表带 padding，与 Rust STANDARD.decode 匹配）
+function blobToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = String(reader.result ?? '')
+      const comma = result.indexOf(',')
+      if (comma < 0) {
+        reject(new Error('无法读取图片数据'))
+      } else {
+        resolve(result.slice(comma + 1))
+      }
+    }
+    reader.onerror = () => reject(reader.error ?? new Error('无法读取图片数据'))
+    reader.readAsDataURL(file)
+  })
+}
 
 interface EditorProps {
   note: Note
@@ -187,16 +205,23 @@ export const Editor: React.FC<EditorProps> = ({
             if (items[i].type.startsWith('image/')) {
               event.preventDefault()
               const currentNoteId = noteRef.current.id
-              suijian.attachments
-                .addFromClipboard(currentNoteId)
+              const file = items[i].getAsFile()
+              // 优先使用粘贴事件自带字节（Chromium 已解码长截图，绕开 arboard 格式限制）；
+              // 字节不可用或被 magic bytes 拒绝时回退 arboard（保留 CF_DIBV5→PNG 重编码能力）
+              const upload: Promise<Attachment> = file
+                ? blobToBase64(file)
+                    .then((b64) => suijian.attachments.addFromBytes(currentNoteId, b64))
+                    .catch(() => suijian.attachments.addFromClipboard(currentNoteId))
+                : suijian.attachments.addFromClipboard(currentNoteId)
+              upload
                 .then((att) => {
-                  if (editor) {
-                    editor
-                      .chain()
-                      .focus()
-                      .setImage({ src: `suijian-attachment://${att.id}` })
-                      .run()
-                  }
+                  // 异步完成后若已切换便签或 editor 失效，不向旧文档插入
+                  if (noteRef.current.id !== currentNoteId || !editor) return
+                  editor
+                    .chain()
+                    .focus()
+                    .setImage({ src: `suijian-attachment://${att.id}` })
+                    .run()
                 })
                 .catch((err) => {
                   setErrorMsg(`粘贴图片失败: ${err instanceof Error ? err.message : String(err)}`)

@@ -554,6 +554,7 @@ pub fn run() {
             tags::tags_delete,
             tags::tags_assign,
             attachments::attachments_add_from_clipboard,
+            attachments::attachments_add_from_bytes,
             attachments::attachments_remove,
             attachments::attachments_get_url,
             backup::backup_export,

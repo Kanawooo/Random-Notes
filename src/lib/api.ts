@@ -63,6 +63,8 @@ export const suijian = {
   attachments: {
     addFromClipboard: (noteId: string): Promise<Attachment> =>
       invoke<Attachment>('attachments_add_from_clipboard', { noteId }),
+    addFromBytes: (noteId: string, dataBase64: string): Promise<Attachment> =>
+      invoke<Attachment>('attachments_add_from_bytes', { noteId, data: dataBase64 }),
     remove: (id: string): Promise<void> =>
       invoke<void>('attachments_remove', { id }),
     getUrl: (id: string): Promise<string> =>

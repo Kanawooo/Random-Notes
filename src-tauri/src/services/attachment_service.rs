@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-pub const MAX_ATTACHMENT_SIZE_BYTES: usize = 15 * 1024 * 1024; // 15MB
+pub const MAX_ATTACHMENT_SIZE_BYTES: usize = 30 * 1024 * 1024; // 30MB
 
 pub struct AttachmentService {
     conn: Arc<Mutex<Connection>>,
@@ -64,7 +64,7 @@ impl AttachmentService {
         }
 
         if data.len() > MAX_ATTACHMENT_SIZE_BYTES {
-            return Err("图片大小超过 15MB 上限".to_string());
+            return Err("图片大小超过 30MB 上限".to_string());
         }
 
         let (mime_type, ext) = Self::validate_magic_bytes(data)
@@ -125,9 +125,10 @@ impl AttachmentService {
     pub fn save_from_clipboard(&self, note_id: &str) -> Result<Attachment, String> {
         let mut clipboard =
             arboard::Clipboard::new().map_err(|e| format!("剪贴板访问失败: {}", e))?;
-        let img = clipboard
-            .get_image()
-            .map_err(|_| "剪贴板中没有图片".to_string())?;
+        let img = clipboard.get_image().map_err(|e| match e {
+            arboard::Error::ContentNotAvailable => "剪贴板中没有图片".to_string(),
+            other => format!("读取剪贴板图片失败: {}", other),
+        })?;
 
         // Convert raw RGBA bitmap to PNG
         let width = img.width as u32;
