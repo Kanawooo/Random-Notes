@@ -86,7 +86,9 @@ pub async fn backup_inspect_select(app: AppHandle) -> Result<BackupInspectResult
         inspect_res.token = Some(token.clone());
 
         let mut lock = pending_restore.lock().unwrap_or_else(|e| e.into_inner());
-        lock.insert(token, path);
+        // 签发前清理超过 30 分钟的陈旧会话，防反复选择备份后放弃确认导致无界增长
+        lock.retain(|_, (_, issued)| issued.elapsed() < std::time::Duration::from_secs(30 * 60));
+        lock.insert(token, (path, std::time::Instant::now()));
 
         Ok(inspect_res)
     })
@@ -107,6 +109,7 @@ pub async fn backup_restore_confirm(
     let path = {
         let mut lock = state.pending_restore.lock().unwrap_or_else(|e| e.into_inner());
         lock.remove(&token)
+            .map(|(p, _)| p)
             .ok_or_else(|| "恢复会话无效或已过期，请重新选择备份文件".to_string())?
     };
     let dialog_open = state.dialog_open.clone();

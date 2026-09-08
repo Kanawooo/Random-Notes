@@ -67,8 +67,12 @@ export const NoteList: React.FC<NoteListProps> = ({
   const pinnedNotes = notes.filter((n) => n.is_pinned && !n.archived_at && !n.deleted_at)
   const recentNotes = notes.filter((n) => !n.is_pinned || n.archived_at || n.deleted_at)
 
+  // focusedIndex 语义基于完整 notes 数组（App 层上下键直接索引），置顶/最近子数组的位置索引不可用；
+  // 渲染前建一次 id→全量索引的 Map，消除 renderNoteCard 内 indexOf 的 O(n²)
+  const indexById = new Map(notes.map((n, i) => [n.id, i] as const))
+
   const renderNoteCard = (note: Note) => {
-    const originalIndex = notes.indexOf(note)
+    const originalIndex = indexById.get(note.id) ?? 0
     const isFocused = originalIndex === focusedIndex
     const isChecked = selectedIds.has(note.id)
 

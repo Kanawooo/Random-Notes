@@ -36,7 +36,8 @@ pub struct AppState {
     pub purge_service: Arc<PurgeService>,
     pub backup_service: Arc<BackupService>,
     pub dialog_open: Arc<AtomicBool>,
-    pub pending_restore: Arc<Mutex<HashMap<String, PathBuf>>>,
+    /// (备份路径, 签发时刻)：token 无过期会随反复 inspect 无界增长，消费前按 30 分钟窗口清理
+    pub pending_restore: Arc<Mutex<HashMap<String, (PathBuf, std::time::Instant)>>>,
     pub startup_hotkey_status: Arc<Mutex<HotkeyStatus>>,
     pub read_only_recovery_error: Option<String>,
     pub focus_blur_token: Arc<AtomicU64>,

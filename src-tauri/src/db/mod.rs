@@ -123,21 +123,4 @@ impl DbService {
     pub fn get_path(&self) -> &Path {
         &self.db_path
     }
-
-    pub fn reopen(&self) -> Result<(), String> {
-        let mut lock = self
-            .conn
-            .lock()
-            .map_err(|_| "Failed to lock database".to_string())?;
-        let new_conn = Connection::open(&self.db_path).map_err(|e| e.to_string())?;
-        new_conn
-            .execute_batch(
-                "PRAGMA journal_mode = WAL;
-             PRAGMA foreign_keys = ON;
-             PRAGMA busy_timeout = 5000;",
-            )
-            .map_err(|e| e.to_string())?;
-        *lock = new_conn;
-        Ok(())
-    }
 }

@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback, useRef } from 'react'
+﻿import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { suijian } from './lib/api'
 import { SearchBar } from './components/SearchBar'
 import { NoteList } from './components/NoteList'
@@ -10,6 +10,55 @@ import { ConfirmDialog } from './components/ConfirmDialog'
 import { UiIcon } from './components/UiIcon'
 import type { Note, NoteScope, Tag, AppSettings, RecoveryStatus } from './types'
 import { toErrMsg } from './lib/errors'
+
+// Normalization helpers for keyboard events（纯函数，模块顶层定义避免每次渲染重建闭包）
+function normalizeCombo(e: KeyboardEvent): string {
+  const parts: string[] = []
+  if (e.ctrlKey) parts.push('CTRL')
+  if (e.altKey) parts.push('ALT')
+  if (e.shiftKey) parts.push('SHIFT')
+  if (e.metaKey) parts.push('SUPER')
+
+  let key = e.key.toUpperCase()
+  if (['CONTROL', 'ALT', 'SHIFT', 'META'].includes(key)) {
+    return ''
+  }
+  if (key === ' ' || key === 'SPACEBAR') {
+    key = 'SPACE'
+  } else if (key === 'ESC') {
+    key = 'ESCAPE'
+  }
+  parts.push(key)
+  return parts.join('+')
+}
+
+function normalizeShortcutSetting(val?: string): string {
+  if (!val) return ''
+  const parts = val
+    .split('+')
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean)
+  const hasCtrl = parts.some((p) => p === 'CTRL' || p === 'CONTROL')
+  const hasAlt = parts.some((p) => p === 'ALT')
+  const hasShift = parts.some((p) => p === 'SHIFT')
+  const hasSuper = parts.some((p) => p === 'SUPER' || p === 'WIN' || p === 'META')
+
+  const keyPart = parts.find(
+    (p) => !['CTRL', 'CONTROL', 'ALT', 'SHIFT', 'SUPER', 'WIN', 'META'].includes(p)
+  )
+
+  let key = keyPart || ''
+  if (key === 'ESC') key = 'ESCAPE'
+  if (key === ' ' || key === 'SPACEBAR') key = 'SPACE'
+
+  const result: string[] = []
+  if (hasCtrl) result.push('CTRL')
+  if (hasAlt) result.push('ALT')
+  if (hasShift) result.push('SHIFT')
+  if (hasSuper) result.push('SUPER')
+  if (key) result.push(key)
+  return result.join('+')
+}
 
 export const App: React.FC = () => {
   const [view, setView] = useState<'search' | 'editor' | 'settings'>('search')
@@ -300,53 +349,15 @@ export const App: React.FC = () => {
   }, [searchQuery, isInitialized, recoveryStatus?.isRecovery])
 
   // Normalization helpers for keyboard events
-  const normalizeCombo = (e: KeyboardEvent): string => {
-    const parts: string[] = []
-    if (e.ctrlKey) parts.push('CTRL')
-    if (e.altKey) parts.push('ALT')
-    if (e.shiftKey) parts.push('SHIFT')
-    if (e.metaKey) parts.push('SUPER')
-
-    let key = e.key.toUpperCase()
-    if (['CONTROL', 'ALT', 'SHIFT', 'META'].includes(key)) {
-      return ''
-    }
-    if (key === ' ' || key === 'SPACEBAR') {
-      key = 'SPACE'
-    } else if (key === 'ESC') {
-      key = 'ESCAPE'
-    }
-    parts.push(key)
-    return parts.join('+')
-  }
-
-  const normalizeShortcutSetting = (val?: string): string => {
-    if (!val) return ''
-    const parts = val
-      .split('+')
-      .map((s) => s.trim().toUpperCase())
-      .filter(Boolean)
-    const hasCtrl = parts.some((p) => p === 'CTRL' || p === 'CONTROL')
-    const hasAlt = parts.some((p) => p === 'ALT')
-    const hasShift = parts.some((p) => p === 'SHIFT')
-    const hasSuper = parts.some((p) => p === 'SUPER' || p === 'WIN' || p === 'META')
-
-    const keyPart = parts.find(
-      (p) => !['CTRL', 'CONTROL', 'ALT', 'SHIFT', 'SUPER', 'WIN', 'META'].includes(p)
-    )
-
-    let key = keyPart || ''
-    if (key === 'ESC') key = 'ESCAPE'
-    if (key === ' ' || key === 'SPACEBAR') key = 'SPACE'
-
-    const result: string[] = []
-    if (hasCtrl) result.push('CTRL')
-    if (hasAlt) result.push('ALT')
-    if (hasShift) result.push('SHIFT')
-    if (hasSuper) result.push('SUPER')
-    if (key) result.push(key)
-    return result.join('+')
-  }
+  // 三个配置快捷键的归一化结果按设置缓存，避免每次按键处理重复解析
+  const shortcutCombos = useMemo(
+    () => ({
+      newNote: normalizeShortcutSetting(settings?.shortcutNewNote || 'Ctrl+N'),
+      back: normalizeShortcutSetting(settings?.shortcutBackToSearch || 'Ctrl+E'),
+      dismiss: normalizeShortcutSetting(settings?.shortcutDismiss || 'Escape'),
+    }),
+    [settings?.shortcutNewNote, settings?.shortcutBackToSearch, settings?.shortcutDismiss]
+  )
 
   // Global Keyboard Handlers
   const handleKeyDown = useCallback(
@@ -355,9 +366,7 @@ export const App: React.FC = () => {
         return
       }
 
-      const shortcutNewNote = normalizeShortcutSetting(settings?.shortcutNewNote || 'Ctrl+N')
-      const shortcutBack = normalizeShortcutSetting(settings?.shortcutBackToSearch || 'Ctrl+E')
-      const shortcutDismiss = normalizeShortcutSetting(settings?.shortcutDismiss || 'Escape')
+      const { newNote: shortcutNewNote, back: shortcutBack, dismiss: shortcutDismiss } = shortcutCombos
 
       const currentCombo = normalizeCombo(e)
 
@@ -456,7 +465,7 @@ export const App: React.FC = () => {
       }
     },
     [
-      settings,
+      shortcutCombos,
       view,
       confirmState.isOpen,
       isTagModalOpen,

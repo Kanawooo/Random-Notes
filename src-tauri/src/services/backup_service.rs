@@ -214,6 +214,30 @@ impl BackupService {
 
         let _ = fs::remove_file(db_snapshot);
         result?;
+
+        // 轮转：文件名含时间戳，字典序即时间序，保留最新 5 个，失败仅记日志不影响恢复流程
+        if let Ok(entries) = fs::read_dir(&backups_dir) {
+            let mut safeties: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.file_name()
+                        .map(|n| {
+                            let n = n.to_string_lossy();
+                            n.starts_with("safety-backup-") && n.ends_with(".zip")
+                        })
+                        .unwrap_or(false)
+                })
+                .collect();
+            safeties.sort();
+            if safeties.len() > 5 {
+                for old in &safeties[..safeties.len() - 5] {
+                    if let Err(e) = fs::remove_file(old) {
+                        eprintln!("[warn] 清理陈旧 safety 快照失败 {:?}: {}", old, e);
+                    }
+                }
+            }
+        }
+
         Ok(safety_final_path)
     }
 
