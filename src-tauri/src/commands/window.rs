@@ -3,6 +3,14 @@ use crate::AppState;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+/// 隐藏主窗口的唯一入口：hide + skip_taskbar(true)，供 window_confirm_hide 与失焦直接隐藏复用
+pub fn hide_main_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+        let _ = win.set_skip_taskbar(true);
+    }
+}
+
 #[tauri::command]
 pub fn window_hide(app: AppHandle) -> Result<(), String> {
     if let Some(win) = app.get_webview_window("main") {
@@ -13,10 +21,13 @@ pub fn window_hide(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn window_confirm_hide(app: AppHandle) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.hide();
-        let _ = win.set_skip_taskbar(true);
-    }
+    hide_main_window(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn window_set_unsaved_error(state: State<AppState>, has_error: bool) -> Result<(), String> {
+    state.has_unsaved_error.store(has_error, Ordering::SeqCst);
     Ok(())
 }
 

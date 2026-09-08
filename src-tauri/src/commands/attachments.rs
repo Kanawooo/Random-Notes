@@ -36,5 +36,6 @@ pub fn attachments_get_url(id: String) -> Result<String, String> {
     if !validate_uuid(&id) {
         return Err("无效的附件 UUID".to_string());
     }
-    Ok(format!("suijian-attachment://{}", id))
+    // Windows WebView2 只拦截 http://<scheme>.localhost/<path> 形式；返回可直接渲染的显示 URL
+    Ok(format!("http://suijian-attachment.localhost/{}", id))
 }

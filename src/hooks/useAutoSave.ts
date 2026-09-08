@@ -2,6 +2,18 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { suijian } from '../lib/api'
 import type { Note } from '../types'
 
+// 防御式调用窗口命令：既有测试的 api mock 未提供 window 命名空间，失败不得打断保存流程
+function notifyUnsavedError(hasError: boolean) {
+  try {
+    const win = suijian.window as unknown as
+      | { setUnsavedError?: (v: boolean) => Promise<void> }
+      | undefined
+    void win?.setUnsavedError?.(hasError)?.catch(() => {})
+  } catch {
+    // ignore
+  }
+}
+
 export type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 export interface PendingSaveData {
@@ -30,6 +42,11 @@ export function useAutoSave({ note, onNoteUpdated, onError }: UseAutoSaveOptions
       currentRevisionRef.current = note.revision
     }
   }, [note])
+
+  // 新编辑器会话起点：复位门控标志（旧便签的 pending 已在导航时 flush或被阻断）
+  useEffect(() => {
+    notifyUnsavedError(false)
+  }, [note?.id])
 
   // Queue of unsaved changes
   const pendingDataRef = useRef<PendingSaveData | null>(null)
@@ -74,6 +91,7 @@ export function useAutoSave({ note, onNoteUpdated, onError }: UseAutoSaveOptions
       currentRevisionRef.current = updated.revision
       onNoteUpdated(updated)
       setSaveStatus('saved')
+      notifyUnsavedError(false)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       // On error: MERGE the failed payload back so changes are never lost!
@@ -82,6 +100,7 @@ export function useAutoSave({ note, onNoteUpdated, onError }: UseAutoSaveOptions
         ...(pendingDataRef.current || {})
       }
       setSaveStatus('error')
+      notifyUnsavedError(true)
       if (onError) onError(msg)
       throw err
     } finally {
@@ -137,6 +156,13 @@ export function useAutoSave({ note, onNoteUpdated, onError }: UseAutoSaveOptions
     return flushSave()
   }, [flushSave])
 
+  // 用户确认错误横幅后清门控标志；仍有未落盘数据时保持阻断，下次保存结果会重新置位
+  const clearSaveError = useCallback(() => {
+    if (!pendingDataRef.current && !inFlightPromiseRef.current) {
+      notifyUnsavedError(false)
+    }
+  }, [])
+
   useEffect(() => {
     return () => {
       if (timerRef.current) {
@@ -150,7 +176,8 @@ export function useAutoSave({ note, onNoteUpdated, onError }: UseAutoSaveOptions
     saveStatus,
     scheduleSave,
     flushSave,
-    retryLastSave
+    retryLastSave,
+    clearSaveError
   }
 }
 

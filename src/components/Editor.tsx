@@ -3,14 +3,33 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import Image from '@tiptap/extension-image'
+import { mergeAttributes } from '@tiptap/core'
 import Link from '@tiptap/extension-link'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import { suijian } from '../lib/api'
 import { sanitizePastedHtml } from '../lib/sanitize'
+import { toAttachmentDisplaySrc } from '../lib/attachmentSrc'
 import { useAutoSave } from '../hooks/useAutoSave'
 import { UiIcon } from './UiIcon'
 import type { Note, Tag } from '../types'
+
+// WebView2 只拦截 http://suijian-attachment.localhost/<id> 形式请求；
+// 文档 JSON 保持 canonical 的 suijian-attachment://<id>，仅在渲染时转换
+const AttachmentImage = Image.extend({
+  renderHTML({ HTMLAttributes }) {
+    return [
+      'img',
+      mergeAttributes(this.options.HTMLAttributes, {
+        ...HTMLAttributes,
+        src: toAttachmentDisplaySrc(String(HTMLAttributes.src ?? ''))
+      })
+    ]
+  }
+}).configure({
+  inline: false,
+  allowBase64: false
+})
 
 interface EditorProps {
   note: Note
@@ -59,7 +78,7 @@ export const Editor: React.FC<EditorProps> = ({
     isPinnedRef.current = isPinned
   }, [isPinned])
 
-  const { saveStatus, scheduleSave, flushSave, retryLastSave } = useAutoSave({
+  const { saveStatus, scheduleSave, flushSave, retryLastSave, clearSaveError } = useAutoSave({
     note,
     onNoteUpdated: (updated) => {
       onNoteUpdated(updated)
@@ -105,10 +124,7 @@ export const Editor: React.FC<EditorProps> = ({
       Placeholder.configure({
         placeholder: '输入正文内容... 支持 Markdown 与图片粘贴'
       }),
-      Image.configure({
-        inline: false,
-        allowBase64: false
-      }),
+      AttachmentImage,
       Link.configure({
         openOnClick: false,
         protocols: ['http', 'https', 'mailto']
@@ -432,7 +448,10 @@ export const Editor: React.FC<EditorProps> = ({
           <button
             type="button"
             className="btn btn-icon"
-            onClick={() => setErrorMsg(null)}
+            onClick={() => {
+              setErrorMsg(null)
+              clearSaveError()
+            }}
             aria-label="关闭提示"
           >
             <UiIcon name="close" size={14} />

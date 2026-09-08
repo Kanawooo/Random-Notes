@@ -107,6 +107,8 @@ export const suijian = {
       invoke<void>('window_show'),
     setDialogOpen: (open: boolean): Promise<void> =>
       invoke<void>('set_dialog_open', { open }),
+    setUnsavedError: (hasError: boolean): Promise<void> =>
+      invoke<void>('window_set_unsaved_error', { hasError }),
     getState: (): Promise<WindowBounds | null> =>
       invoke<WindowBounds | null>('window_get_state'),
     updateState: (bounds: WindowBounds): Promise<void> =>

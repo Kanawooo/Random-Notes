@@ -1,6 +1,7 @@
 use crate::db::models::{AppInfo, RecoveryStatus};
 use crate::utils::paths::{get_db_path, get_user_data_dir};
 use crate::AppState;
+use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
@@ -64,6 +65,9 @@ pub fn app_open_external(url: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn renderer_ready(app: AppHandle, state: State<AppState>) -> Result<(), String> {
+    // 渲染进程（重）加载后编辑器状态从 DB 重建，复位门控标志，防滞留值永久抑制自动隐藏
+    state.has_unsaved_error.store(false, Ordering::SeqCst);
+    state.dialog_open.store(false, Ordering::SeqCst);
     if !state.is_minimized_startup {
         if let Some(win) = app.get_webview_window("main") {
             let _ = win.set_skip_taskbar(false);

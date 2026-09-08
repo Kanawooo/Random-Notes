@@ -5,6 +5,7 @@ pub mod services;
 pub mod utils;
 
 use commands::*;
+use commands::window::hide_main_window;
 use db::models::{HotkeyStatus, WindowBounds};
 use db::DbService;
 use protocol::handle_attachment_protocol;
@@ -39,13 +40,18 @@ pub struct AppState {
     pub startup_hotkey_status: Arc<Mutex<HotkeyStatus>>,
     pub read_only_recovery_error: Option<String>,
     pub focus_blur_token: Arc<AtomicU64>,
+    pub has_unsaved_error: Arc<AtomicBool>,
     pub is_minimized_startup: bool,
 }
+
+/// 失焦后自动隐藏的宽限时间：吸收瞬时夺焦（输入法/系统弹窗/任务栏）引发的焦点抖动
+const HIDE_GRACE_MS: u64 = 150;
 
 fn toggle_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         if win.is_visible().unwrap_or(false) {
             let _ = win.emit("event:request-hide", ());
+            hide_main_window(app);
         } else {
             let _ = win.set_skip_taskbar(false);
             let _ = win.show();
@@ -124,6 +130,7 @@ pub fn run() {
 
     let dialog_open = Arc::new(AtomicBool::new(false));
     let focus_blur_token = Arc::new(AtomicU64::new(0));
+    let has_unsaved_error = Arc::new(AtomicBool::new(false));
     let pending_restore = Arc::new(Mutex::new(HashMap::new()));
     let startup_hotkey_status = Arc::new(Mutex::new(HotkeyStatus {
         registered: false,
@@ -176,6 +183,7 @@ pub fn run() {
             startup_hotkey_status,
             read_only_recovery_error,
             focus_blur_token,
+            has_unsaved_error,
             is_minimized_startup,
         })
         .setup(|app| {
@@ -431,6 +439,7 @@ pub fn run() {
                         if let Some(win) = app.get_webview_window("main") {
                             if win.is_visible().unwrap_or(false) {
                                 let _ = win.emit("event:request-hide", ());
+                                hide_main_window(app);
                             } else {
                                 let _ = win.set_skip_taskbar(false);
                                 let _ = win.show();
@@ -455,25 +464,32 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 let auto_hide = state.settings_service.get_all().auto_hide_on_blur;
                 let is_dialog_open = state.dialog_open.load(Ordering::SeqCst);
+                let has_unsaved_error = state.has_unsaved_error.load(Ordering::SeqCst);
 
                 if *focused {
                     state.focus_blur_token.fetch_add(1, Ordering::SeqCst);
-                } else if auto_hide && !is_dialog_open {
+                } else if auto_hide && !is_dialog_open && !has_unsaved_error {
                     let token_val = state.focus_blur_token.fetch_add(1, Ordering::SeqCst) + 1;
                     let app_handle = app.clone();
                     let win = window.clone();
                     let token_arc = state.focus_blur_token.clone();
+                    let dialog_arc = state.dialog_open.clone();
+                    let error_arc = state.has_unsaved_error.clone();
                     std::thread::spawn(move || {
-                        std::thread::sleep(Duration::from_millis(350));
-                        if token_arc.load(Ordering::SeqCst) == token_val {
-                            if !win.is_focused().unwrap_or(false) {
-                                let state = app_handle.state::<AppState>();
-                                let auto_hide = state.settings_service.get_all().auto_hide_on_blur;
-                                let is_dialog_open = state.dialog_open.load(Ordering::SeqCst);
-                                if auto_hide && !is_dialog_open {
-                                    let _ = win.emit("event:request-hide", ());
-                                }
-                            }
+                        std::thread::sleep(Duration::from_millis(HIDE_GRACE_MS));
+                        if token_arc.load(Ordering::SeqCst) != token_val {
+                            return;
+                        }
+                        if win.is_focused().unwrap_or(false) {
+                            return;
+                        }
+                        let state = app_handle.state::<AppState>();
+                        let auto_hide = state.settings_service.get_all().auto_hide_on_blur;
+                        if auto_hide && !dialog_arc.load(Ordering::SeqCst) && !error_arc.load(Ordering::SeqCst) {
+                            // 先通知渲染进程后台 flush 未落盘编辑，再主侧直接隐藏；隐藏不再等待渲染进程回执，
+                            // 避免窗口被遮挡时 WebView2 节流渲染进程导致的秒级延迟
+                            let _ = win.emit("event:request-hide", ());
+                            hide_main_window(&app_handle);
                         }
                     });
                 }
@@ -551,6 +567,7 @@ pub fn run() {
             settings::settings_register_hotkey,
             window::window_hide,
             window::window_confirm_hide,
+            window::window_set_unsaved_error,
             window::window_show,
             window::set_dialog_open,
             window::window_get_state,

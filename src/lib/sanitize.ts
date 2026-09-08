@@ -1,3 +1,5 @@
+import { toAttachmentCanonicalSrc } from './attachmentSrc'
+
 export function sanitizePastedHtml(html: string): string {
   if (!html || typeof html !== 'string') return ''
 
@@ -11,13 +13,15 @@ export function sanitizePastedHtml(html: string): string {
     elements.forEach((el) => el.remove())
   })
 
-  // Sanitize images: only allow suijian-attachment:// scheme
+  // Sanitize images: only allow attachment refs (canonical or WebView2 display form, normalized back to canonical)
   const images = doc.querySelectorAll('img')
   images.forEach((img) => {
     const src = img.getAttribute('src') || ''
-    if (!src.startsWith('suijian-attachment://')) {
+    const canonicalSrc = toAttachmentCanonicalSrc(src)
+    if (!canonicalSrc.startsWith('suijian-attachment://')) {
       img.remove()
     } else {
+      img.setAttribute('src', canonicalSrc)
       // Strip potentially dangerous attributes
       for (const attr of Array.from(img.attributes)) {
         if (!['src', 'alt', 'title', 'width', 'height', 'class'].includes(attr.name.toLowerCase())) {
