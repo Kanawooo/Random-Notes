@@ -108,9 +108,14 @@ pub async fn backup_restore_confirm(
     // token 消费与 dialog_open 门控留在命令入口，保证单次消费语义；只把慢恢复搬进阻塞线程
     let path = {
         let mut lock = state.pending_restore.lock().unwrap_or_else(|e| e.into_inner());
-        lock.remove(&token)
-            .map(|(p, _)| p)
-            .ok_or_else(|| "恢复会话无效或已过期，请重新选择备份文件".to_string())?
+        let (path, issued) = lock
+            .remove(&token)
+            .ok_or_else(|| "恢复会话无效或已过期，请重新选择备份文件".to_string())?;
+        // 消费端时效校验：签发端只在下次 inspect 时懒清理，放置超时后旧 token 仍可直接恢复
+        if issued.elapsed() >= std::time::Duration::from_secs(30 * 60) {
+            return Err("恢复会话已过期（超过 30 分钟），请重新选择备份文件".to_string());
+        }
+        path
     };
     let dialog_open = state.dialog_open.clone();
     let backup_service = state.backup_service.clone();

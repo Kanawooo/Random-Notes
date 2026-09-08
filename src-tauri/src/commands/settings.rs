@@ -108,6 +108,8 @@ pub fn settings_register_hotkey(
     state: State<AppState>,
     hotkey: String,
 ) -> Result<HotkeyStatus, String> {
+    // 成功分支会 update("hotkey") 写库：恢复模式下 OS 层真生效+内存库假成功，重启回退，拒绝
+    check_write_permission(&state)?;
     let current_settings = state.settings_service.get_all();
     let old_hotkey = current_settings.hotkey.clone();
 

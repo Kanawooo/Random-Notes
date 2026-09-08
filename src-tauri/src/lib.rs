@@ -445,6 +445,10 @@ pub fn run() {
                     }
                     "launch_at_login" => {
                         let state = app.state::<AppState>();
+                        // 恢复模式内存库假成功+OS 层真生效，重启后 DB 回退造成状态分裂，直接拒绝
+                        if state.read_only_recovery_error.is_some() {
+                            eprintln!("[warn] 系统处于只读恢复模式，忽略开机自启切换");
+                        } else {
                         let cur = state.settings_service.get_all().launch_at_login;
                         let target = !cur;
                         use tauri_plugin_autostart::ManagerExt;
@@ -466,6 +470,7 @@ pub fn run() {
                                 }
                             }
                         }
+                    }
                     }
                     "quit" => {
                         let _ = app.emit("event:request-quit", ());

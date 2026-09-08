@@ -143,11 +143,12 @@ impl BackupService {
         let backups_dir = user_data_dir.join("backups");
         fs::create_dir_all(&backups_dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
         let snapshot_path = backups_dir.join(format!(".safety-db-{}.tmp", uuid::Uuid::new_v4()));
-        conn.execute_batch(&format!(
-            "VACUUM INTO '{}';",
-            snapshot_path.to_string_lossy().replace('\\', "\\\\")
-        ))
-        .map_err(|e| format!("VACUUM INTO 生成数据库快照失败: {}", e))?;
+        // 绑参传文件名：SQLite 字符串字面量不支持反斜杠转义（唯一转义是 ''），
+        // 路径含单引号（如用户名 O'Brien）时拼串形式直接语法错、恢复被整体阻断
+        if let Err(e) = conn.execute("VACUUM INTO ?1", params![snapshot_path.to_string_lossy()]) {
+            let _ = fs::remove_file(&snapshot_path);
+            return Err(format!("VACUUM INTO 生成数据库快照失败: {}", e));
+        }
         Ok(snapshot_path)
     }
 
@@ -213,7 +214,11 @@ impl BackupService {
         })();
 
         let _ = fs::remove_file(db_snapshot);
-        result?;
+        if let Err(e) = result {
+            // 与 export_backup 失败分支删 .export-*.tmp 同构：资源创建者自行清理，非新增机制
+            let _ = fs::remove_file(&safety_tmp_path);
+            return Err(e);
+        }
 
         // 轮转：文件名含时间戳，字典序即时间序，保留最新 5 个，失败仅记日志不影响恢复流程
         if let Ok(entries) = fs::read_dir(&backups_dir) {
