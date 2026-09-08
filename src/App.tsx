@@ -45,10 +45,13 @@ export const App: React.FC = () => {
   })
 
   // Refresh notes list
+  // 请求序号守卫：快速连续刷新时，陈旧响应不得覆盖新结果集，也不得用旧列表裁剪已选 id
+  const refreshSeqRef = useRef(0)
   const refreshNotes = useCallback(async () => {
     if (recoveryStatus?.isRecovery) {
       return
     }
+    const seq = ++refreshSeqRef.current
     try {
       let list: Note[]
       if (searchQuery.trim()) {
@@ -59,6 +62,7 @@ export const App: React.FC = () => {
       if (selectedTagId) {
         list = list.filter((n) => n.tags?.some((t) => t.id === selectedTagId))
       }
+      if (seq !== refreshSeqRef.current) return
       setNotes(list)
       setFocusedIndex(0)
       setSelectedIds((prev) => {
@@ -270,11 +274,21 @@ export const App: React.FC = () => {
     }
   }, [])
 
+  // scope/标签/初始化/恢复模式变化即时刷新；searchQuery 由下方防抖 effect 处理。
+  // 守卫与 deps 必须完整：恢复模式不得发 notes.list（app-workflow.test.tsx:317 护栏）
   useEffect(() => {
     if (isInitialized && !recoveryStatus?.isRecovery) {
-      refreshNotes()
+      refreshNotesRef.current()
     }
-  }, [isInitialized, recoveryStatus?.isRecovery, refreshNotes])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isInitialized, recoveryStatus?.isRecovery, scope, selectedTagId])
+
+  // 搜索防抖：每按键不再直发 IPC+SQLite 查询
+  useEffect(() => {
+    if (!isInitialized || recoveryStatus?.isRecovery) return
+    const t = setTimeout(() => refreshNotesRef.current(), 250)
+    return () => clearTimeout(t)
+  }, [searchQuery, isInitialized, recoveryStatus?.isRecovery])
 
   // Normalization helpers for keyboard events
   const normalizeCombo = (e: KeyboardEvent): string => {
@@ -705,7 +719,9 @@ export const App: React.FC = () => {
             onFocusIndex={setFocusedIndex}
             searchQuery={searchQuery}
             newNoteShortcut={
-              scope === 'active' && !selectedTagId && !recoveryStatus
+              // bootstrap 无条件存 recoveryStatus 对象，故必须用 ?.isRecovery 判恢复态；
+              // isInitialized 门控避免启动瞬间闪一帧新建提示
+              isInitialized && scope === 'active' && !selectedTagId && !recoveryStatus?.isRecovery
                 ? settings?.shortcutNewNote || 'Ctrl+N'
                 : undefined
             }

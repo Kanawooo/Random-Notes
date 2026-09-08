@@ -73,15 +73,21 @@ export const Editor: React.FC<EditorProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const noteRef = useRef(note)
+  const noteIdRef = useRef(note.id)
   const titleRef = useRef(title)
   const titleManuallyEditedRef = useRef(titleManuallyEdited)
   const isPinnedRef = useRef(isPinned)
 
+  // 保存回写不得覆盖输入中的标题：组件已用 key={note.id} 重挂载，仅 id 变化时重置本地 state（防御分支）；
+  // noteRef 每渲染同步最新对象（粘贴守卫、各 handler 依赖）
   useEffect(() => {
     noteRef.current = note
-    setTitle(note.title)
-    setTitleManuallyEdited(note.title_manually_edited)
-    setIsPinned(note.is_pinned)
+    if (noteIdRef.current !== note.id) {
+      noteIdRef.current = note.id
+      setTitle(note.title)
+      setTitleManuallyEdited(note.title_manually_edited)
+      setIsPinned(note.is_pinned)
+    }
   }, [note])
 
   useEffect(() => {
@@ -290,7 +296,7 @@ export const Editor: React.FC<EditorProps> = ({
     const nextPin = !isPinned
     setIsPinned(nextPin)
     try {
-      const updated = await suijian.notes.pin(note.id, nextPin)
+      const updated = await suijian.notes.pin(noteRef.current.id, nextPin)
       onNoteUpdated(updated)
     } catch (err) {
       setIsPinned(!nextPin)
@@ -305,11 +311,11 @@ export const Editor: React.FC<EditorProps> = ({
       return
     }
     try {
-      if (note.archived_at) {
-        const updated = await suijian.notes.unarchive(note.id)
+      if (noteRef.current.archived_at) {
+        const updated = await suijian.notes.unarchive(noteRef.current.id)
         onNoteUpdated(updated)
       } else {
-        const updated = await suijian.notes.archive(note.id)
+        const updated = await suijian.notes.archive(noteRef.current.id)
         onNoteUpdated(updated)
       }
       onBack()
@@ -325,7 +331,7 @@ export const Editor: React.FC<EditorProps> = ({
       return
     }
     try {
-      const updated = await suijian.notes.trash(note.id)
+      const updated = await suijian.notes.trash(noteRef.current.id)
       onNoteUpdated(updated)
       onBack()
     } catch (err) {
@@ -335,7 +341,7 @@ export const Editor: React.FC<EditorProps> = ({
 
   const handleRestore = async () => {
     try {
-      const updated = await suijian.notes.restore(note.id)
+      const updated = await suijian.notes.restore(noteRef.current.id)
       onNoteUpdated(updated)
     } catch (err) {
       setErrorMsg(`恢复便签失败: ${err instanceof Error ? err.message : String(err)}`)
@@ -348,12 +354,12 @@ export const Editor: React.FC<EditorProps> = ({
       setErrorMsg('便签正在保存或保存失败，无法添加标签')
       return
     }
-    const currentTagIds = (note.tags || []).map((t) => t.id)
+    const currentTagIds = (noteRef.current.tags || []).map((t) => t.id)
     if (currentTagIds.includes(tagId)) return
     const nextIds = [...currentTagIds, tagId]
     try {
-      await suijian.tags.assign({ noteId: note.id, tagIds: nextIds })
-      const refreshed = await suijian.notes.get(note.id)
+      await suijian.tags.assign({ noteId: noteRef.current.id, tagIds: nextIds })
+      const refreshed = await suijian.notes.get(noteRef.current.id)
       if (refreshed) onNoteUpdated(refreshed)
     } catch (err) {
       setErrorMsg(`添加标签失败: ${err instanceof Error ? err.message : String(err)}`)
@@ -366,11 +372,11 @@ export const Editor: React.FC<EditorProps> = ({
       setErrorMsg('便签正在保存或保存失败，无法移除标签')
       return
     }
-    const currentTagIds = (note.tags || []).map((t) => t.id)
+    const currentTagIds = (noteRef.current.tags || []).map((t) => t.id)
     const nextIds = currentTagIds.filter((id) => id !== tagId)
     try {
-      await suijian.tags.assign({ noteId: note.id, tagIds: nextIds })
-      const refreshed = await suijian.notes.get(note.id)
+      await suijian.tags.assign({ noteId: noteRef.current.id, tagIds: nextIds })
+      const refreshed = await suijian.notes.get(noteRef.current.id)
       if (refreshed) onNoteUpdated(refreshed)
     } catch (err) {
       setErrorMsg(`移除标签失败: ${err instanceof Error ? err.message : String(err)}`)
