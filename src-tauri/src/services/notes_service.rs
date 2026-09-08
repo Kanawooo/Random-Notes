@@ -1,4 +1,4 @@
-use crate::db::fts::{sanitize_query, sync_note_by_id};
+﻿use crate::db::fts::{sanitize_query, sync_note_by_id};
 use crate::db::models::{BatchResult, CreateNoteInput, Note, NoteScope, Tag, UpdateNoteInput};
 use crate::utils::paths::validate_uuid;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -29,12 +29,12 @@ impl NotesService {
     }
 
     pub fn clear_tracked_empty_draft(&self) {
-        let mut lock = self.tracked_empty_draft_id.lock().unwrap();
+        let mut lock = self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner());
         *lock = None;
     }
 
     pub fn get_tracked_empty_draft_id(&self) -> Option<String> {
-        let lock = self.tracked_empty_draft_id.lock().unwrap();
+        let lock = self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner());
         lock.clone()
     }
 
@@ -125,12 +125,12 @@ impl NotesService {
     }
 
     pub fn create(&self, input: CreateNoteInput) -> Result<Note, String> {
-        let _create_guard = self.create_lock.lock().unwrap();
+        let _create_guard = self.create_lock.lock().unwrap_or_else(|e| e.into_inner());
 
         // Check if empty draft can be reused without holding tracked_empty_draft_id while querying DB
         if input.reuse_empty_draft == Some(true) {
             let draft_id_opt = {
-                let lock = self.tracked_empty_draft_id.lock().unwrap();
+                let lock = self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner());
                 lock.clone()
             };
 
@@ -159,7 +159,7 @@ impl NotesService {
                         }
                     }
                 }
-                *self.tracked_empty_draft_id.lock().unwrap() = None;
+                *self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
         }
 
@@ -218,7 +218,7 @@ impl NotesService {
         drop(conn);
 
         if input.reuse_empty_draft == Some(true) {
-            *self.tracked_empty_draft_id.lock().unwrap() = Some(id.clone());
+            *self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
         }
 
         self.get_by_id(&id)?
@@ -296,7 +296,7 @@ impl NotesService {
         drop(conn);
 
         // If tracked draft changed, invalidate
-        let mut tracked_lock = self.tracked_empty_draft_id.lock().unwrap();
+        let mut tracked_lock = self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner());
         if tracked_lock.as_deref() == Some(&input.id)
             && (!plain_text.trim().is_empty() || title_manually_edited)
         {
@@ -484,7 +484,7 @@ impl NotesService {
             .map_err(|e| e.to_string())?;
         }
 
-        let mut tracked = self.tracked_empty_draft_id.lock().unwrap();
+        let mut tracked = self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner());
         if tracked.as_deref() == Some(id) {
             *tracked = None;
         }
@@ -549,7 +549,7 @@ impl NotesService {
         tx.commit().map_err(|e| e.to_string())?;
         drop(conn);
 
-        let mut tracked = self.tracked_empty_draft_id.lock().unwrap();
+        let mut tracked = self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref tid) = *tracked {
             if unique_ids.contains(tid) {
                 *tracked = None;
@@ -602,7 +602,7 @@ impl NotesService {
         tx.commit().map_err(|e| e.to_string())?;
         drop(conn);
 
-        let mut tracked = self.tracked_empty_draft_id.lock().unwrap();
+        let mut tracked = self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref tid) = *tracked {
             if unique_ids.contains(tid) {
                 *tracked = None;
@@ -649,7 +649,7 @@ impl NotesService {
         tx.commit().map_err(|e| e.to_string())?;
         drop(conn);
 
-        let mut tracked = self.tracked_empty_draft_id.lock().unwrap();
+        let mut tracked = self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(ref tid) = *tracked {
             if trash_ids.contains(tid) {
                 *tracked = None;

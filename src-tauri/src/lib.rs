@@ -20,7 +20,7 @@ use utils::paths::{ensure_dirs, get_attachments_dir, get_db_path, set_user_data_
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -41,6 +41,8 @@ pub struct AppState {
     pub read_only_recovery_error: Option<String>,
     pub focus_blur_token: Arc<AtomicU64>,
     pub has_unsaved_error: Arc<AtomicBool>,
+    /// 窗口位置防抖发送端：mpsc::Sender 非 Sync，裸入 manage() 的 state 编译失败，Mutex 包裹后满足 Send+Sync
+    pub bounds_tx: Mutex<mpsc::Sender<WindowBounds>>,
     pub is_minimized_startup: bool,
 }
 
@@ -149,6 +151,29 @@ pub fn run() {
     let focus_blur_token = Arc::new(AtomicU64::new(0));
     let has_unsaved_error = Arc::new(AtomicBool::new(false));
     let pending_restore = Arc::new(Mutex::new(HashMap::new()));
+
+    // 窗口位置防抖：Moved/Resized 每事件同步写库（内含 get_all 7 次取锁查询）在拖拽时每秒数十次，
+    // 改为事件侧（主线程）取好几何塞 channel，防抖线程吸收 500ms 内新事件仅落盘最后一个；
+    // hide/quit 路径另有直接同步 flush 兑底（app.exit 与 drain 存在竞态，不走 channel）
+    let (bounds_tx, bounds_rx) = mpsc::channel::<WindowBounds>();
+    {
+        let settings_service_for_bounds = settings_service.clone();
+        std::thread::spawn(move || {
+            while let Ok(first) = bounds_rx.recv() {
+                let mut latest = first;
+                while let Ok(next) = bounds_rx.recv_timeout(Duration::from_millis(500)) {
+                    latest = next;
+                }
+                if let Err(e) = settings_service_for_bounds.update(
+                    "windowBounds",
+                    serde_json::to_value(latest).unwrap_or_default(),
+                ) {
+                    eprintln!("[warn] 保存窗口位置尺寸失败: {}", e);
+                }
+            }
+        });
+    }
+
     let startup_hotkey_status = Arc::new(Mutex::new(HotkeyStatus {
         registered: false,
         current_hotkey: String::new(),
@@ -201,6 +226,7 @@ pub fn run() {
             read_only_recovery_error,
             focus_blur_token,
             has_unsaved_error,
+            bounds_tx: Mutex::new(bounds_tx),
             is_minimized_startup,
         })
         .setup(|app| {
@@ -239,7 +265,7 @@ pub fn run() {
                 },
             };
 
-            let mut hotkey_lock = state.startup_hotkey_status.lock().unwrap();
+            let mut hotkey_lock = state.startup_hotkey_status.lock().unwrap_or_else(|e| e.into_inner());
             *hotkey_lock = hotkey_res;
             drop(hotkey_lock);
 
@@ -516,18 +542,12 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 state.focus_blur_token.fetch_add(1, Ordering::SeqCst);
                 if let Ok(size) = window.inner_size() {
-                    if let Err(e) = state.settings_service.update(
-                        "windowBounds",
-                        serde_json::to_value(WindowBounds {
-                            x: pos.x,
-                            y: pos.y,
-                            width: size.width,
-                            height: size.height,
-                        })
-                        .unwrap_or_default(),
-                    ) {
-                        eprintln!("[warn] 保存窗口移动位置失败: {}", e);
-                    }
+                    let _ = state.bounds_tx.lock().unwrap_or_else(|e| e.into_inner()).send(WindowBounds {
+                        x: pos.x,
+                        y: pos.y,
+                        width: size.width,
+                        height: size.height,
+                    });
                 }
             }
             WindowEvent::Resized(size) => {
@@ -535,18 +555,12 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 state.focus_blur_token.fetch_add(1, Ordering::SeqCst);
                 if let Ok(pos) = window.outer_position() {
-                    if let Err(e) = state.settings_service.update(
-                        "windowBounds",
-                        serde_json::to_value(WindowBounds {
-                            x: pos.x,
-                            y: pos.y,
-                            width: size.width,
-                            height: size.height,
-                        })
-                        .unwrap_or_default(),
-                    ) {
-                        eprintln!("[warn] 保存窗口调整尺寸失败: {}", e);
-                    }
+                    let _ = state.bounds_tx.lock().unwrap_or_else(|e| e.into_inner()).send(WindowBounds {
+                        x: pos.x,
+                        y: pos.y,
+                        width: size.width,
+                        height: size.height,
+                    });
                 }
             }
             _ => {}

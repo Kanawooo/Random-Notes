@@ -131,10 +131,29 @@ impl BackupService {
         validate_uuid(uuid_part)
     }
 
-    fn create_physical_safety_snapshot(&self, conn: &rusqlite::Connection) -> Result<PathBuf, String> {
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-            .map_err(|e| format!("WAL checkpoint 失败: {}", e))?;
+    /// 短持锁阶段：VACUUM INTO 生成一致性 DB 快照（自带事务视图一致性，无需 wal_checkpoint；
+    /// bundled SQLite 3.48 支持，目标文件必须不存在，故用 uuid 临时名）
+    fn create_db_snapshot_locked(&self, conn: &rusqlite::Connection) -> Result<PathBuf, String> {
+        let user_data_dir = self
+            .db_service
+            .get_path()
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(get_user_data_dir);
+        let backups_dir = user_data_dir.join("backups");
+        fs::create_dir_all(&backups_dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
+        let snapshot_path = backups_dir.join(format!(".safety-db-{}.tmp", uuid::Uuid::new_v4()));
+        conn.execute_batch(&format!(
+            "VACUUM INTO '{}';",
+            snapshot_path.to_string_lossy().replace('\\', "\\\\")
+        ))
+        .map_err(|e| format!("VACUUM INTO 生成数据库快照失败: {}", e))?;
+        Ok(snapshot_path)
+    }
 
+    /// 锁外慢阶段：读快照 DB 文件 + 附件目录 → 打包 safety zip（tmp+rename 原子落盘）→ 删临时快照。
+    /// zip 条目名保持 suijian.db + attachments/<filename> 与原实现一致（人工兑底恢复路径依赖此结构）
+    fn package_safety_snapshot(&self, db_snapshot: &Path) -> Result<PathBuf, String> {
         let user_data_dir = self
             .db_service
             .get_path()
@@ -150,49 +169,51 @@ impl BackupService {
         let safety_tmp_path = backups_dir.join(format!(".{}.tmp", safety_file_name));
         let safety_final_path = backups_dir.join(&safety_file_name);
 
-        let file = File::create(&safety_tmp_path)
-            .map_err(|e| format!("创建安全快照临时文件失败: {}", e))?;
-        let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
+        let result = (|| -> Result<(), String> {
+            let file = File::create(&safety_tmp_path)
+                .map_err(|e| format!("创建安全快照临时文件失败: {}", e))?;
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
 
-        let db_path = self.db_service.get_path();
-        if db_path.exists() {
-            let db_bytes = fs::read(db_path)
-                .map_err(|e| format!("读取当前数据库文件失败: {}", e))?;
+            let db_bytes = fs::read(db_snapshot)
+                .map_err(|e| format!("读取数据库快照失败: {}", e))?;
             zip.start_file("suijian.db", options)
                 .map_err(|e| format!("写入安全快照数据库条目失败: {}", e))?;
             zip.write_all(&db_bytes)
                 .map_err(|e| format!("写入安全快照数据库内容失败: {}", e))?;
-        }
 
-        let current_attachments_dir = self.attachment_service.get_attachments_dir();
-        if current_attachments_dir.exists() {
-            let entries = fs::read_dir(&current_attachments_dir)
-                .map_err(|e| format!("读取附件目录失败: {}", e))?;
-            for entry in entries {
-                let entry = entry.map_err(|e| format!("读取附件条目失败: {}", e))?;
-                let ft = entry
-                    .file_type()
-                    .map_err(|e| format!("获取附件类型失败: {}", e))?;
-                if ft.is_file() {
-                    let file_name = entry.file_name().to_string_lossy().to_string();
-                    let file_data = fs::read(entry.path())
-                        .map_err(|e| format!("读取物理附件文件 {} 失败: {}", file_name, e))?;
-                    let zip_entry_name = format!("attachments/{}", file_name);
-                    zip.start_file(&zip_entry_name, options)
-                        .map_err(|e| format!("写入安全快照附件条目失败: {}", e))?;
-                    zip.write_all(&file_data)
-                        .map_err(|e| format!("写入安全快照附件内容失败: {}", e))?;
+            let current_attachments_dir = self.attachment_service.get_attachments_dir();
+            if current_attachments_dir.exists() {
+                let entries = fs::read_dir(&current_attachments_dir)
+                    .map_err(|e| format!("读取附件目录失败: {}", e))?;
+                for entry in entries {
+                    let entry = entry.map_err(|e| format!("读取附件条目失败: {}", e))?;
+                    let ft = entry
+                        .file_type()
+                        .map_err(|e| format!("获取附件类型失败: {}", e))?;
+                    if ft.is_file() {
+                        let file_name = entry.file_name().to_string_lossy().to_string();
+                        let file_data = fs::read(entry.path())
+                            .map_err(|e| format!("读取物理附件文件 {} 失败: {}", file_name, e))?;
+                        let zip_entry_name = format!("attachments/{}", file_name);
+                        zip.start_file(&zip_entry_name, options)
+                            .map_err(|e| format!("写入安全快照附件条目失败: {}", e))?;
+                        zip.write_all(&file_data)
+                            .map_err(|e| format!("写入安全快照附件内容失败: {}", e))?;
+                    }
                 }
             }
-        }
 
-        zip.finish()
-            .map_err(|e| format!("安全快照压缩打包完成失败: {}", e))?;
-        fs::rename(&safety_tmp_path, &safety_final_path)
-            .map_err(|e| format!("安全快照文件重命名失败: {}", e))?;
+            zip.finish()
+                .map_err(|e| format!("安全快照压缩打包完成失败: {}", e))?;
+            fs::rename(&safety_tmp_path, &safety_final_path)
+                .map_err(|e| format!("安全快照文件重命名失败: {}", e))?;
+            Ok(())
+        })();
 
+        let _ = fs::remove_file(db_snapshot);
+        result?;
         Ok(safety_final_path)
     }
 
@@ -919,15 +940,25 @@ impl BackupService {
             }
         }
 
-        // 3. Acquire DB connection lock BEFORE modifying physical attachments
+        // 3. 短持锁：VACUUM INTO 生成一致性 DB 快照后立即放锁。
+        //    快照与恢复之间存在极小写入窗口（放锁后其他命令可写库/改附件），
+        //    恢复本身为全量覆盖，窗口仅使快照内容与实际库毫秒级不一致——可接受的降级快照
+        let snapshot_db = {
+            let conn_arc = self.db_service.get_conn();
+            let conn = conn_arc
+                .lock()
+                .map_err(|_| "Database lock failed".to_string())?;
+            self.create_db_snapshot_locked(&conn)?
+        };
+
+        // 4. 锁外慢操作：读附件+压缩打包（原持锁打包会阻塞全部命令），失败仍中止恢复
+        self.package_safety_snapshot(&snapshot_db)
+            .map_err(|e| format!("生成恢复前物理安全快照失败，中止恢复: {}", e))?;
+
         let conn_arc = self.db_service.get_conn();
         let mut conn = conn_arc
             .lock()
             .map_err(|_| "Database lock failed".to_string())?;
-
-        // 4. Create physical safety snapshot of current DB and attachments under lock
-        self.create_physical_safety_snapshot(&conn)
-            .map_err(|e| format!("生成恢复前物理安全快照失败，中止恢复: {}", e))?;
 
         // 5. Staged swap: switch attachments directory while holding DB lock
         let current_attachments_dir = self.attachment_service.get_attachments_dir().to_path_buf();

@@ -1,4 +1,4 @@
-use crate::db::models::{AppSettings, HotkeyStatus};
+﻿use crate::db::models::{AppSettings, HotkeyStatus};
 use crate::AppState;
 use tauri::{AppHandle, State};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
@@ -98,7 +98,7 @@ pub fn settings_update_action_shortcuts(
 
 #[tauri::command]
 pub fn settings_get_hotkey_status(state: State<AppState>) -> Result<HotkeyStatus, String> {
-    let lock = state.startup_hotkey_status.lock().unwrap();
+    let lock = state.startup_hotkey_status.lock().unwrap_or_else(|e| e.into_inner());
     Ok(lock.clone())
 }
 
@@ -131,7 +131,7 @@ pub fn settings_register_hotkey(
     // If same as current, check if already registered and active
     if normalized.eq_ignore_ascii_case(&old_hotkey) {
         let is_registered = {
-            let lock = state.startup_hotkey_status.lock().unwrap();
+            let lock = state.startup_hotkey_status.lock().unwrap_or_else(|e| e.into_inner());
             lock.registered
         };
         if is_registered {
@@ -143,7 +143,7 @@ pub fn settings_register_hotkey(
                 error: None,
                 recommended_hotkey: None,
             };
-            let mut lock = state.startup_hotkey_status.lock().unwrap();
+            let mut lock = state.startup_hotkey_status.lock().unwrap_or_else(|e| e.into_inner());
             *lock = status.clone();
             return Ok(status);
         }
@@ -207,7 +207,7 @@ pub fn settings_register_hotkey(
         recommended_hotkey: None,
     };
 
-    let mut lock = state.startup_hotkey_status.lock().unwrap();
+    let mut lock = state.startup_hotkey_status.lock().unwrap_or_else(|e| e.into_inner());
     *lock = status.clone();
 
     Ok(status)

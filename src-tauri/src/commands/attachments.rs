@@ -12,15 +12,21 @@ fn check_write_permission(state: &AppState) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn attachments_add_from_clipboard(
-    state: State<AppState>,
+pub async fn attachments_add_from_clipboard(
+    app: AppHandle,
     note_id: String,
 ) -> Result<Attachment, String> {
+    let state = app.state::<AppState>();
     check_write_permission(&state)?;
     if !validate_uuid(&note_id) {
         return Err("无效的便签 UUID".to_string());
     }
-    state.attachment_service.save_from_clipboard(&note_id)
+    let svc = state.attachment_service.clone();
+    drop(state);
+    // arboard Clipboard 在阻塞线程内创建与读取（同步命令原在主线程执行，arboard 读+PNG 重编码会冻结 UI）
+    tauri::async_runtime::spawn_blocking(move || svc.save_from_clipboard(&note_id))
+        .await
+        .map_err(|e| format!("剪贴板读取任务执行失败: {}", e))?
 }
 
 /// 仓库首批 async 命令之一：入口校验与 base64 解码在 async 上下文完成，

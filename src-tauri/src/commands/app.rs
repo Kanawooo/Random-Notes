@@ -37,6 +37,8 @@ pub fn app_quit(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn app_confirm_quit(app: AppHandle) -> Result<(), String> {
+    // 退出前兑底落盘窗口位置（防抖线程 500ms drain 与 app.exit 存在竞态）
+    crate::commands::window::flush_window_bounds(&app);
     app.exit(0);
     Ok(())
 }
