@@ -2,6 +2,9 @@
 import { suijian } from '../lib/api'
 import type { AppSettings, Tag, BackupInspectResult } from '../types'
 import { toErrMsg } from '../lib/errors'
+import { normalizeShortcutSetting, detectConflict } from '../lib/shortcuts'
+
+type ShortcutField = 'hotkey' | 'newNote' | 'back' | 'dismiss'
 
 interface SettingsViewProps {
   onSettingsChanged?: (settings: AppSettings) => void
@@ -40,6 +43,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
   const [prefError, setPrefError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // 录制时的软冲突警告（硬互斥仍由后端保存时拒绝）；单一事实源在 lib/shortcuts
+  const [scWarnings, setScWarnings] = useState<Partial<Record<ShortcutField, string | null>>>({})
   const msgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [inspectResult, setInspectResult] = useState<BackupInspectResult | null>(null)
   const [isRestoring, setIsRestoring] = useState(false)
@@ -53,6 +58,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setDismissInput(s.shortcutDismiss)
       setLaunchAtLogin(s.launchAtLogin)
       setAutoHideOnBlur(s.autoHideOnBlur)
+      setScWarnings({})
 
       const status = await suijian.settings.getHotkeyStatus()
       if (!status.registered) {
@@ -88,9 +94,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     loadSettingsAndTags()
   }, [])
 
+  const SHORTCUT_FIELD_LABELS: Record<ShortcutField, string> = {
+    hotkey: '全局召唤键',
+    newNote: '新建便签',
+    back: '返回搜索',
+    dismiss: '隐藏/收起窗口'
+  }
+
   const handleShortcutKeyDown = (
     e: React.KeyboardEvent<HTMLInputElement>,
-    setter: (val: string) => void
+    setter: (val: string) => void,
+    field: ShortcutField
   ) => {
     if (e.key === 'Tab') return
     e.preventDefault()
@@ -99,6 +113,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     if (e.key === 'Backspace' || e.key === 'Delete') {
       setter('')
+      setScWarnings((prev) => ({ ...prev, [field]: null }))
       return
     }
     if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
@@ -116,7 +131,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     else if (keyName.length === 1) keyName = keyName.toUpperCase()
 
     parts.push(keyName)
-    setter(parts.join('+'))
+    const combo = parts.join('+')
+    setter(combo)
+
+    // 即时软冲突检测：与其他三项（含当前输入值）互斥 + 编辑器/系统键位；
+    // 全局召唤键不检编辑器表（系统级 RegisterHotKey 命中时按键不进页面，让位文案无意义）
+    const rawValues: Record<ShortcutField, string> = {
+      hotkey: hotkeyInput,
+      newNote: newNoteInput,
+      back: backSearchInput,
+      dismiss: dismissInput
+    }
+    const others = (Object.keys(rawValues) as ShortcutField[])
+      .filter((k) => k !== field)
+      .map((k) => ({ label: SHORTCUT_FIELD_LABELS[k], combo: normalizeShortcutSetting(rawValues[k]) }))
+      .filter((o) => o.combo !== '')
+    const warning = detectConflict(normalizeShortcutSetting(combo), others, field !== 'hotkey')
+    setScWarnings((prev) => ({ ...prev, [field]: warning ? warning.message : null }))
   }
 
   const handleRegisterHotkey = async () => {
@@ -148,6 +179,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         shortcutDismiss: dismissInput
       })
       flashActionMsg('应用内快捷键已更新！')
+      setScWarnings({})
       onSettingsChanged?.(updated)
     } catch (err) {
       setActionShortcutMsg(`更新失败: ${toErrMsg(err)}`)
@@ -355,7 +387,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               style={{ width: '160px', textAlign: 'center', fontFamily: 'var(--font-mono)' }}
               value={hotkeyInput}
               onChange={(e) => setHotkeyInput(e.target.value)}
-              onKeyDown={(e) => handleShortcutKeyDown(e, setHotkeyInput)}
+              onKeyDown={(e) => handleShortcutKeyDown(e, setHotkeyInput, 'hotkey')}
               placeholder="Ctrl+Space"
               aria-label="热键输入"
             />
@@ -369,6 +401,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </button>
           </div>
         </div>
+        {scWarnings.hotkey && (
+          <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '4px' }}>
+            {scWarnings.hotkey}
+          </div>
+        )}
         {hotkeyMessage && (
           <div
             style={{
@@ -402,11 +439,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             style={{ width: '140px', textAlign: 'center', fontFamily: 'var(--font-mono)' }}
             value={newNoteInput}
             onChange={(e) => setNewNoteInput(e.target.value)}
-            onKeyDown={(e) => handleShortcutKeyDown(e, setNewNoteInput)}
+            onKeyDown={(e) => handleShortcutKeyDown(e, setNewNoteInput, 'newNote')}
             placeholder="Ctrl+N"
             aria-label="新建便签快捷键"
           />
         </div>
+        {scWarnings.newNote && (
+          <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '-4px', marginBottom: '8px' }}>
+            {scWarnings.newNote}
+          </div>
+        )}
 
         <div className="setting-row">
           <div>
@@ -419,11 +461,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             style={{ width: '140px', textAlign: 'center', fontFamily: 'var(--font-mono)' }}
             value={backSearchInput}
             onChange={(e) => setBackSearchInput(e.target.value)}
-            onKeyDown={(e) => handleShortcutKeyDown(e, setBackSearchInput)}
+            onKeyDown={(e) => handleShortcutKeyDown(e, setBackSearchInput, 'back')}
             placeholder="Ctrl+E"
             aria-label="返回搜索列表快捷键"
           />
         </div>
+        {scWarnings.back && (
+          <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '-4px', marginBottom: '8px' }}>
+            {scWarnings.back}
+          </div>
+        )}
 
         <div className="setting-row">
           <div>
@@ -436,11 +483,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             style={{ width: '140px', textAlign: 'center', fontFamily: 'var(--font-mono)' }}
             value={dismissInput}
             onChange={(e) => setDismissInput(e.target.value)}
-            onKeyDown={(e) => handleShortcutKeyDown(e, setDismissInput)}
+            onKeyDown={(e) => handleShortcutKeyDown(e, setDismissInput, 'dismiss')}
             placeholder="Escape"
             aria-label="隐藏窗口快捷键"
           />
         </div>
+        {scWarnings.dismiss && (
+          <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '-4px', marginBottom: '8px' }}>
+            {scWarnings.dismiss}
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: '8px', marginTop: '12px', alignItems: 'center' }}>
           <button type="button" className="btn btn-primary" onClick={handleSaveActionShortcuts}>

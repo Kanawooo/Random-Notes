@@ -10,8 +10,9 @@ import { ConfirmDialog } from './components/ConfirmDialog'
 import { UiIcon } from './components/UiIcon'
 import type { Note, NoteScope, Tag, AppSettings, RecoveryStatus } from './types'
 import { toErrMsg } from './lib/errors'
+import { normalizeShortcutSetting } from './lib/shortcuts'
 
-// Normalization helpers for keyboard events（纯函数，模块顶层定义避免每次渲染重建闭包）
+// 键盘事件归一化（纯函数，模块顶层定义避免每次渲染重建闭包；配置值侧归一化见 lib/shortcuts）
 function normalizeCombo(e: KeyboardEvent): string {
   const parts: string[] = []
   if (e.ctrlKey) parts.push('CTRL')
@@ -30,34 +31,6 @@ function normalizeCombo(e: KeyboardEvent): string {
   }
   parts.push(key)
   return parts.join('+')
-}
-
-function normalizeShortcutSetting(val?: string): string {
-  if (!val) return ''
-  const parts = val
-    .split('+')
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean)
-  const hasCtrl = parts.some((p) => p === 'CTRL' || p === 'CONTROL')
-  const hasAlt = parts.some((p) => p === 'ALT')
-  const hasShift = parts.some((p) => p === 'SHIFT')
-  const hasSuper = parts.some((p) => p === 'SUPER' || p === 'WIN' || p === 'META')
-
-  const keyPart = parts.find(
-    (p) => !['CTRL', 'CONTROL', 'ALT', 'SHIFT', 'SUPER', 'WIN', 'META'].includes(p)
-  )
-
-  let key = keyPart || ''
-  if (key === 'ESC') key = 'ESCAPE'
-  if (key === ' ' || key === 'SPACEBAR') key = 'SPACE'
-
-  const result: string[] = []
-  if (hasCtrl) result.push('CTRL')
-  if (hasAlt) result.push('ALT')
-  if (hasShift) result.push('SHIFT')
-  if (hasSuper) result.push('SUPER')
-  if (key) result.push(key)
-  return result.join('+')
 }
 
 export const App: React.FC = () => {
