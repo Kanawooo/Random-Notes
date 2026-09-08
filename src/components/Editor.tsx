@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+﻿import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -13,6 +13,7 @@ import { toAttachmentDisplaySrc } from '../lib/attachmentSrc'
 import { useAutoSave } from '../hooks/useAutoSave'
 import { UiIcon } from './UiIcon'
 import type { Attachment, Note, Tag } from '../types'
+import { toErrMsg } from '../lib/errors'
 
 // WebView2 只拦截 http://suijian-attachment.localhost/<id> 形式请求；
 // 文档 JSON 保持 canonical 的 suijian-attachment://<id>，仅在渲染时转换
@@ -192,7 +193,7 @@ export const Editor: React.FC<EditorProps> = ({
             const url = new URL(target.href)
             if (['http:', 'https:', 'mailto:'].includes(url.protocol)) {
               suijian.app.openExternal(target.href).catch((err) => {
-                setErrorMsg(`打开外部链接失败: ${err}`)
+                setErrorMsg(`打开外部链接失败: ${toErrMsg(err)}`)
               })
             } else {
               setErrorMsg('安全限制：仅允许打开 http, https 及 mailto 链接')
@@ -230,7 +231,7 @@ export const Editor: React.FC<EditorProps> = ({
                     .run()
                 })
                 .catch((err) => {
-                  setErrorMsg(`粘贴图片失败: ${err instanceof Error ? err.message : String(err)}`)
+                  setErrorMsg(`粘贴图片失败: ${toErrMsg(err)}`)
                 })
               return true
             }
@@ -252,7 +253,7 @@ export const Editor: React.FC<EditorProps> = ({
           .run()
       }
     } catch (err) {
-      setErrorMsg(`无法从剪贴板粘贴图片: ${err instanceof Error ? err.message : String(err)}`)
+      setErrorMsg(`无法从剪贴板粘贴图片: ${toErrMsg(err)}`)
     }
   }, [editor])
 
@@ -300,7 +301,7 @@ export const Editor: React.FC<EditorProps> = ({
       onNoteUpdated(updated)
     } catch (err) {
       setIsPinned(!nextPin)
-      setErrorMsg(`更新置顶状态失败: ${err instanceof Error ? err.message : String(err)}`)
+      setErrorMsg(`更新置顶状态失败: ${toErrMsg(err)}`)
     }
   }
 
@@ -320,7 +321,7 @@ export const Editor: React.FC<EditorProps> = ({
       }
       onBack()
     } catch (err) {
-      setErrorMsg(`归档操作失败: ${err instanceof Error ? err.message : String(err)}`)
+      setErrorMsg(`归档操作失败: ${toErrMsg(err)}`)
     }
   }
 
@@ -335,7 +336,7 @@ export const Editor: React.FC<EditorProps> = ({
       onNoteUpdated(updated)
       onBack()
     } catch (err) {
-      setErrorMsg(`移入回收站失败: ${err instanceof Error ? err.message : String(err)}`)
+      setErrorMsg(`移入回收站失败: ${toErrMsg(err)}`)
     }
   }
 
@@ -344,7 +345,7 @@ export const Editor: React.FC<EditorProps> = ({
       const updated = await suijian.notes.restore(noteRef.current.id)
       onNoteUpdated(updated)
     } catch (err) {
-      setErrorMsg(`恢复便签失败: ${err instanceof Error ? err.message : String(err)}`)
+      setErrorMsg(`恢复便签失败: ${toErrMsg(err)}`)
     }
   }
 
@@ -362,7 +363,7 @@ export const Editor: React.FC<EditorProps> = ({
       const refreshed = await suijian.notes.get(noteRef.current.id)
       if (refreshed) onNoteUpdated(refreshed)
     } catch (err) {
-      setErrorMsg(`添加标签失败: ${err instanceof Error ? err.message : String(err)}`)
+      setErrorMsg(`添加标签失败: ${toErrMsg(err)}`)
     }
   }
 
@@ -379,7 +380,7 @@ export const Editor: React.FC<EditorProps> = ({
       const refreshed = await suijian.notes.get(noteRef.current.id)
       if (refreshed) onNoteUpdated(refreshed)
     } catch (err) {
-      setErrorMsg(`移除标签失败: ${err instanceof Error ? err.message : String(err)}`)
+      setErrorMsg(`移除标签失败: ${toErrMsg(err)}`)
     }
   }
 

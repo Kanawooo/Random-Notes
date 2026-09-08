@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react'
+﻿import React, { useState, useEffect, useRef } from 'react'
 import { suijian } from '../lib/api'
 import type { AppSettings, Tag, BackupInspectResult } from '../types'
+import { toErrMsg } from '../lib/errors'
 
 interface SettingsViewProps {
   onSettingsChanged?: (settings: AppSettings) => void
@@ -37,6 +38,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [backupLoading, setBackupLoading] = useState(false)
   const [backupStatus, setBackupStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
+  const [prefError, setPrefError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const msgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [inspectResult, setInspectResult] = useState<BackupInspectResult | null>(null)
   const [isRestoring, setIsRestoring] = useState(false)
 
@@ -63,8 +67,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setTags(tagList)
     } catch (err) {
       console.error('Failed to load settings or tags:', err)
+      setLoadError('加载设置失败：' + toErrMsg(err))
     }
   }
+
+  // 消息定时器统一由 ref 管理：set 前清旧值，卸载时清理，避免卸载后 setState
+  const flashActionMsg = (msg: string) => {
+    if (msgTimerRef.current) clearTimeout(msgTimerRef.current)
+    setActionShortcutMsg(msg)
+    msgTimerRef.current = setTimeout(() => setActionShortcutMsg(null), 3000)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     loadSettingsAndTags()
@@ -129,11 +147,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         shortcutBackToSearch: backSearchInput,
         shortcutDismiss: dismissInput
       })
-      setActionShortcutMsg('应用内快捷键已更新！')
+      flashActionMsg('应用内快捷键已更新！')
       onSettingsChanged?.(updated)
-      setTimeout(() => setActionShortcutMsg(null), 3000)
     } catch (err) {
-      setActionShortcutMsg(`更新失败: ${err instanceof Error ? err.message : String(err)}`)
+      setActionShortcutMsg(`更新失败: ${toErrMsg(err)}`)
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current)
+      msgTimerRef.current = setTimeout(() => setActionShortcutMsg(null), 5000)
     }
   }
 
@@ -151,11 +170,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       })
       await suijian.settings.registerHotkey('Ctrl+Space')
       const all = await suijian.settings.getAll()
-      setActionShortcutMsg('快捷键已恢复默认设置！')
+      flashActionMsg('快捷键已恢复默认设置！')
       onSettingsChanged?.(all)
-      setTimeout(() => setActionShortcutMsg(null), 3000)
     } catch (err) {
-      setActionShortcutMsg(`恢复失败: ${err instanceof Error ? err.message : String(err)}`)
+      setActionShortcutMsg(`恢复失败: ${toErrMsg(err)}`)
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current)
+      msgTimerRef.current = setTimeout(() => setActionShortcutMsg(null), 5000)
     }
   }
 
@@ -221,9 +241,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setLaunchAtLogin(checked)
     try {
       const updated = await suijian.settings.update('launchAtLogin', checked)
+      setPrefError(null)
       onSettingsChanged?.(updated)
     } catch (err) {
       console.error(err)
+      setLaunchAtLogin(!checked) // 乐观开关失败后回滚，避免 UI 与实际状态不一致
+      setPrefError('保存开机自启动设置失败：' + toErrMsg(err))
     }
   }
 
@@ -231,9 +254,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setAutoHideOnBlur(checked)
     try {
       const updated = await suijian.settings.update('autoHideOnBlur', checked)
+      setPrefError(null)
       onSettingsChanged?.(updated)
     } catch (err) {
       console.error(err)
+      setAutoHideOnBlur(!checked) // 同上：失败回滚并提示
+      setPrefError('保存自动收起设置失败：' + toErrMsg(err))
     }
   }
 
@@ -558,6 +584,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       {/* 系统偏好 */}
       <div className="settings-section">
         <h3 className="settings-title">系统偏好</h3>
+        {loadError && <div className="error-banner">{loadError}</div>}
+        {prefError && <div className="error-banner">{prefError}</div>}
         <div className="setting-row">
           <div>
             <div>开机自启动</div>

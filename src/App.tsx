@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
+﻿import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { suijian } from './lib/api'
 import { SearchBar } from './components/SearchBar'
 import { NoteList } from './components/NoteList'
@@ -9,6 +9,7 @@ import { TagModal } from './components/TagModal'
 import { ConfirmDialog } from './components/ConfirmDialog'
 import { UiIcon } from './components/UiIcon'
 import type { Note, NoteScope, Tag, AppSettings, RecoveryStatus } from './types'
+import { toErrMsg } from './lib/errors'
 
 export const App: React.FC = () => {
   const [view, setView] = useState<'search' | 'editor' | 'settings'>('search')
@@ -76,7 +77,7 @@ export const App: React.FC = () => {
       })
     } catch (err) {
       console.error('Failed to load notes:', err)
-      setErrorBanner('加载便签列表失败：' + (err instanceof Error ? err.message : String(err)))
+      setErrorBanner('加载便签列表失败：' + toErrMsg(err))
     }
   }, [searchQuery, scope, selectedTagId, recoveryStatus?.isRecovery])
 
@@ -89,7 +90,7 @@ export const App: React.FC = () => {
       setTags(list)
     } catch (err) {
       console.error('Failed to load tags:', err)
-      setErrorBanner('加载标签失败：' + (err instanceof Error ? err.message : String(err)))
+      setErrorBanner('加载标签失败：' + toErrMsg(err))
     }
   }, [recoveryStatus?.isRecovery])
 
@@ -132,7 +133,7 @@ export const App: React.FC = () => {
         refreshNotes()
       } catch (err) {
         console.error('Failed to create note:', err)
-        setErrorBanner('新建便签失败：' + (err instanceof Error ? err.message : String(err)))
+        setErrorBanner('新建便签失败：' + toErrMsg(err))
       }
     },
     [recoveryStatus?.isRecovery, refreshNotes]
@@ -221,18 +222,26 @@ export const App: React.FC = () => {
             setView('editor')
           }),
           suijian.events.onRequestHide(async () => {
-            if (registeredFlushRef.current) {
-              const ok = await registeredFlushRef.current()
-              if (!ok) return
+            try {
+              if (registeredFlushRef.current) {
+                const ok = await registeredFlushRef.current()
+                if (!ok) return
+              }
+              await suijian.window.confirmHide()
+            } catch (err) {
+              console.error('隐藏窗口失败:', err)
             }
-            await suijian.window.confirmHide()
           }),
           suijian.events.onRequestQuit(async () => {
-            if (registeredFlushRef.current) {
-              const ok = await registeredFlushRef.current()
-              if (!ok) return
+            try {
+              if (registeredFlushRef.current) {
+                const ok = await registeredFlushRef.current()
+                if (!ok) return
+              }
+              await suijian.app.confirmQuit()
+            } catch (err) {
+              console.error('退出流程失败:', err)
             }
-            await suijian.app.confirmQuit()
           })
         ])
 
@@ -257,7 +266,7 @@ export const App: React.FC = () => {
         console.error('App bootstrap error:', err)
         if (isMounted) {
           setIsInitialized(true)
-          setErrorBanner('应用初始化失败：' + (err instanceof Error ? err.message : String(err)))
+          setErrorBanner('应用初始化失败：' + toErrMsg(err))
         }
       }
     }
@@ -377,7 +386,7 @@ export const App: React.FC = () => {
           }
           if (shortcutDismiss === 'ESCAPE') {
             e.preventDefault()
-            suijian.window.hide()
+            suijian.window.hide().catch((err) => console.error('隐藏窗口失败:', err))
             return
           }
         }
@@ -391,7 +400,7 @@ export const App: React.FC = () => {
           return
         }
         if (view === 'search') {
-          suijian.window.hide()
+          suijian.window.hide().catch((err) => console.error('隐藏窗口失败:', err))
           return
         }
       }
@@ -497,7 +506,7 @@ export const App: React.FC = () => {
           refreshNotes()
         } catch (err) {
           console.error(err)
-          setErrorBanner('批量移入回收站失败：' + (err instanceof Error ? err.message : String(err)))
+          setErrorBanner('批量移入回收站失败：' + toErrMsg(err))
         }
       }
     })
@@ -518,7 +527,7 @@ export const App: React.FC = () => {
           refreshNotes()
         } catch (err) {
           console.error(err)
-          setErrorBanner('彻底删除失败：' + (err instanceof Error ? err.message : String(err)))
+          setErrorBanner('彻底删除失败：' + toErrMsg(err))
         }
       }
     })
@@ -538,7 +547,7 @@ export const App: React.FC = () => {
           refreshNotes()
         } catch (err) {
           console.error(err)
-          setErrorBanner('清空回收站失败：' + (err instanceof Error ? err.message : String(err)))
+          setErrorBanner('清空回收站失败：' + toErrMsg(err))
         }
       }
     })
@@ -668,7 +677,12 @@ export const App: React.FC = () => {
             type="button"
             className="btn"
             style={{ padding: '2px 8px', fontSize: '12px', marginLeft: 'auto' }}
-            onClick={() => suijian.app.openUserDataFolder()}
+            onClick={() =>
+              suijian.app.openUserDataFolder().catch((err) => {
+                console.error(err)
+                setErrorBanner('打开数据目录失败：' + toErrMsg(err))
+              })
+            }
           >
             打开数据目录
           </button>
@@ -780,6 +794,9 @@ export const App: React.FC = () => {
                 refreshNotes()
                 refreshTags()
               }
+            }).catch((err) => {
+              console.error(err)
+              setErrorBanner('获取数据状态失败：' + toErrMsg(err))
             })
           }}
         />

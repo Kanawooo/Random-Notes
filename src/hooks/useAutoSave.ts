@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+﻿import { useState, useRef, useEffect, useCallback } from 'react'
 import { suijian } from '../lib/api'
 import type { Note } from '../types'
+import { toErrMsg } from '../lib/errors'
 
 // 防御式调用窗口命令：既有测试的 api mock 未提供 window 命名空间，失败不得打断保存流程
 function notifyUnsavedError(hasError: boolean) {
@@ -93,7 +94,7 @@ export function useAutoSave({ note, onNoteUpdated, onError }: UseAutoSaveOptions
       setSaveStatus('saved')
       notifyUnsavedError(false)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = toErrMsg(err)
       // On error: MERGE the failed payload back so changes are never lost!
       pendingDataRef.current = {
         ...dataToSave,

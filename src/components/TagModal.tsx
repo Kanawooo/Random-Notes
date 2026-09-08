@@ -1,5 +1,6 @@
-import React, { useState } from 'react'
+﻿import React, { useState } from 'react'
 import { suijian } from '../lib/api'
+import { toErrMsg } from '../lib/errors'
 import type { Tag } from '../types'
 import { UiIcon } from './UiIcon'
 
@@ -37,7 +38,7 @@ export const TagModal: React.FC<TagModalProps> = ({
       setNewTagName('')
       onRefreshTags()
     } catch (err: unknown) {
-      setErrorMsg(String(err))
+      setErrorMsg(toErrMsg(err))
     }
   }
 
@@ -52,7 +53,7 @@ export const TagModal: React.FC<TagModalProps> = ({
       setEditingId(null)
       onRefreshTags()
     } catch (err: unknown) {
-      setErrorMsg(String(err))
+      setErrorMsg(toErrMsg(err))
     }
   }
 
@@ -62,7 +63,7 @@ export const TagModal: React.FC<TagModalProps> = ({
       await suijian.tags.delete(id)
       onRefreshTags()
     } catch (err: unknown) {
-      setErrorMsg(String(err))
+      setErrorMsg(toErrMsg(err))
     }
   }
 
@@ -81,7 +82,7 @@ export const TagModal: React.FC<TagModalProps> = ({
           </button>
         </div>
 
-        {errorMsg && <div className="settings-alert alert-error">{errorMsg}</div>}
+        {errorMsg && <div className="error-banner">{errorMsg}</div>}
 
         <div className="modal-body tag-modal-body">
           {/* Create Row */}
