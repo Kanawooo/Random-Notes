@@ -45,6 +45,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [loadError, setLoadError] = useState<string | null>(null)
   // 录制时的软冲突警告（硬互斥仍由后端保存时拒绝）；单一事实源在 lib/shortcuts
   const [scWarnings, setScWarnings] = useState<Partial<Record<ShortcutField, string | null>>>({})
+  // 已持久化的动作快捷键基准（后端返回形态），仅用于“未保存修改”指示：
+  // 录制只写本地 state，持久化唯一入口是保存按钮——H2 防复发（无自动保存，零行为变更）
+  const loadedShortcutsRef = useRef<{ newNote: string; back: string; dismiss: string } | null>(null)
   const msgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [inspectResult, setInspectResult] = useState<BackupInspectResult | null>(null)
   const [isRestoring, setIsRestoring] = useState(false)
@@ -59,6 +62,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setLaunchAtLogin(s.launchAtLogin)
       setAutoHideOnBlur(s.autoHideOnBlur)
       setScWarnings({})
+      loadedShortcutsRef.current = {
+        newNote: s.shortcutNewNote,
+        back: s.shortcutBackToSearch,
+        dismiss: s.shortcutDismiss
+      }
 
       const status = await suijian.settings.getHotkeyStatus()
       if (!status.registered) {
@@ -180,6 +188,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       })
       flashActionMsg('应用内快捷键已更新！')
       setScWarnings({})
+      loadedShortcutsRef.current = {
+        newNote: updated.shortcutNewNote,
+        back: updated.shortcutBackToSearch,
+        dismiss: updated.shortcutDismiss
+      }
       onSettingsChanged?.(updated)
     } catch (err) {
       setActionShortcutMsg(`更新失败: ${toErrMsg(err)}`)
@@ -203,6 +216,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       await suijian.settings.registerHotkey('Ctrl+Space')
       const all = await suijian.settings.getAll()
       flashActionMsg('快捷键已恢复默认设置！')
+      setScWarnings({})
+      loadedShortcutsRef.current = {
+        newNote: all.shortcutNewNote,
+        back: all.shortcutBackToSearch,
+        dismiss: all.shortcutDismiss
+      }
       onSettingsChanged?.(all)
     } catch (err) {
       setActionShortcutMsg(`恢复失败: ${toErrMsg(err)}`)
@@ -366,6 +385,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   }
 
+  // 未保存指示：归一化后比较，避免大小写/写法差异误报
+  const loaded = loadedShortcutsRef.current
+  const shortcutsDirty =
+    !!loaded &&
+    (normalizeShortcutSetting(newNoteInput) !== normalizeShortcutSetting(loaded.newNote) ||
+      normalizeShortcutSetting(backSearchInput) !== normalizeShortcutSetting(loaded.back) ||
+      normalizeShortcutSetting(dismissInput) !== normalizeShortcutSetting(loaded.dismiss))
+
   return (
     <div className="settings-view">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
@@ -496,13 +523,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         <div style={{ display: 'flex', gap: '8px', marginTop: '12px', alignItems: 'center' }}>
           <button type="button" className="btn btn-primary" onClick={handleSaveActionShortcuts}>
-            保存按键设置
+            保存按键设置{shortcutsDirty ? ' •' : ''}
           </button>
           <button type="button" className="btn" onClick={handleRestoreDefaultShortcuts}>
             恢复默认按键
           </button>
           {actionShortcutMsg && (
             <span style={{ fontSize: '12px', color: 'var(--sage-success)' }}>{actionShortcutMsg}</span>
+          )}
+          {shortcutsDirty && (
+            <span style={{ fontSize: '12px', color: 'var(--danger-color)' }}>有未保存的按键修改</span>
           )}
         </div>
       </div>
