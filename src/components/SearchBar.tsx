@@ -11,7 +11,6 @@ interface SearchBarProps {
   onSelectTag?: (tagId: string | null) => void
   onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
   totalCount: number
-  dismissShortcut?: string
   newNoteShortcut?: string
   focusTrigger?: number
 }
@@ -26,7 +25,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   onSelectTag,
   onKeyDown,
   totalCount,
-  dismissShortcut = 'Escape',
   newNoteShortcut = 'Ctrl+N',
   focusTrigger
 }) => {
@@ -52,7 +50,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           autoFocus
           aria-label="便签全局搜索框"
         />
-        <span className="search-hint">{dismissShortcut} 隐藏</span>
       </div>
 
       {/* 范围与标签筛选 */}

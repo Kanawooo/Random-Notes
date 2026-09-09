@@ -4,7 +4,7 @@ import type { AppSettings, Tag, BackupInspectResult } from '../types'
 import { toErrMsg } from '../lib/errors'
 import { normalizeShortcutSetting, detectConflict } from '../lib/shortcuts'
 
-type ShortcutField = 'hotkey' | 'newNote' | 'back' | 'dismiss'
+type ShortcutField = 'hotkey' | 'newNote' | 'back'
 
 interface SettingsViewProps {
   onSettingsChanged?: (settings: AppSettings) => void
@@ -22,7 +22,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [hotkeyInput, setHotkeyInput] = useState('')
   const [newNoteInput, setNewNoteInput] = useState('')
   const [backSearchInput, setBackSearchInput] = useState('')
-  const [dismissInput, setDismissInput] = useState('')
   const [launchAtLogin, setLaunchAtLogin] = useState(false)
   const [autoHideOnBlur, setAutoHideOnBlur] = useState(false)
 
@@ -58,7 +57,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setHotkeyInput(s.hotkey)
       setNewNoteInput(s.shortcutNewNote)
       setBackSearchInput(s.shortcutBackToSearch)
-      setDismissInput(s.shortcutDismiss)
       setLaunchAtLogin(s.launchAtLogin)
       setAutoHideOnBlur(s.autoHideOnBlur)
       setScWarnings({})
@@ -105,8 +103,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const SHORTCUT_FIELD_LABELS: Record<ShortcutField, string> = {
     hotkey: '全局召唤键',
     newNote: '新建便签',
-    back: '返回搜索',
-    dismiss: '隐藏/收起窗口'
+    back: '返回搜索'
   }
 
   const handleShortcutKeyDown = (
@@ -142,13 +139,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const combo = parts.join('+')
     setter(combo)
 
-    // 即时软冲突检测：与其他三项（含当前输入值）互斥 + 编辑器/系统键位；
+    // 即时软冲突检测：与其他两项（含当前输入值）互斥 + 编辑器/系统键位；
     // 全局召唤键不检编辑器表（系统级 RegisterHotKey 命中时按键不进页面，让位文案无意义）
     const rawValues: Record<ShortcutField, string> = {
       hotkey: hotkeyInput,
       newNote: newNoteInput,
-      back: backSearchInput,
-      dismiss: dismissInput
+      back: backSearchInput
     }
     const others = (Object.keys(rawValues) as ShortcutField[])
       .filter((k) => k !== field)
@@ -184,7 +180,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const updated = await suijian.settings.updateActionShortcuts({
         shortcutNewNote: newNoteInput,
         shortcutBackToSearch: backSearchInput,
-        shortcutDismiss: dismissInput
+        // 收起不再可配：后端签名保留第四键，固定回传存量值（存量自定义 dismiss 不参与本次修改）
+        shortcutDismiss: loadedShortcutsRef.current?.dismiss ?? 'Escape'
       })
       flashActionMsg('应用内快捷键已更新！')
       setScWarnings({})
@@ -205,7 +202,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setHotkeyInput('Ctrl+Space')
     setNewNoteInput('Ctrl+N')
     setBackSearchInput('Ctrl+E')
-    setDismissInput('Escape')
 
     try {
       await suijian.settings.updateActionShortcuts({
@@ -390,8 +386,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const shortcutsDirty =
     !!loaded &&
     (normalizeShortcutSetting(newNoteInput) !== normalizeShortcutSetting(loaded.newNote) ||
-      normalizeShortcutSetting(backSearchInput) !== normalizeShortcutSetting(loaded.back) ||
-      normalizeShortcutSetting(dismissInput) !== normalizeShortcutSetting(loaded.dismiss))
+      normalizeShortcutSetting(backSearchInput) !== normalizeShortcutSetting(loaded.back))
 
   return (
     <div className="settings-view">
@@ -452,7 +447,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       <div className="settings-section">
         <h3 className="settings-title">应用内快捷键</h3>
         <div className="setting-desc" style={{ marginBottom: '12px' }}>
-          支持单键（如 Esc）或组合键（如 Ctrl+N、Ctrl+E）。点击输入框后直接按下物理键位即可录入。
+          支持单键（如 F2）或组合键（如 Ctrl+N、Ctrl+E）。点击输入框后直接按下物理键位即可录入。
         </div>
 
         <div className="setting-row">
@@ -496,28 +491,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             onKeyDown={(e) => handleShortcutKeyDown(e, setBackSearchInput, 'back')}
             placeholder="Ctrl+E"
             aria-label="返回搜索列表快捷键"
-          />
-        </div>
-
-        <div className="setting-row">
-          <div>
-            <div>隐藏/收起窗口快捷键</div>
-            <div className="setting-desc">关闭面板并驻留系统托盘（默认 Escape）</div>
-            {scWarnings.dismiss && (
-              <div className="setting-desc" style={{ fontSize: '12px', color: '#b45309', marginTop: '4px' }}>
-                {scWarnings.dismiss}
-              </div>
-            )}
-          </div>
-          <input
-            type="text"
-            className="btn"
-            style={{ width: '140px', textAlign: 'center', fontFamily: 'var(--font-mono)' }}
-            value={dismissInput}
-            onChange={(e) => setDismissInput(e.target.value)}
-            onKeyDown={(e) => handleShortcutKeyDown(e, setDismissInput, 'dismiss')}
-            placeholder="Escape"
-            aria-label="隐藏窗口快捷键"
           />
         </div>
 

@@ -323,24 +323,23 @@ export const App: React.FC = () => {
   }, [searchQuery, isInitialized, recoveryStatus?.isRecovery])
 
   // Normalization helpers for keyboard events
-  // 三个配置快捷键的归一化结果按设置缓存，避免每次按键处理重复解析
+  // 两个可配置快捷键的归一化结果按设置缓存，避免每次按键处理重复解析（收起统一由全局召唤键承担）
   const shortcutCombos = useMemo(
     () => ({
       newNote: normalizeShortcutSetting(settings?.shortcutNewNote || 'Ctrl+N'),
       back: normalizeShortcutSetting(settings?.shortcutBackToSearch || 'Ctrl+E'),
-      dismiss: normalizeShortcutSetting(settings?.shortcutDismiss || 'Escape'),
     }),
-    [settings?.shortcutNewNote, settings?.shortcutBackToSearch, settings?.shortcutDismiss]
+    [settings?.shortcutNewNote, settings?.shortcutBackToSearch]
   )
 
   // 应用级保留快捷键：编辑器正文中命中时必须放行给 window 全局处理器（Editor 的 handleDOMEvents 消费）。
-  // 不硬编码 ESCAPE：输入法转换中 Escape 是系统取消键，无条件放行会造成误返回；
-  // 需要 Escape 在正文生效时由用户把 dismiss 配置为 Escape（由 App 分支 1 的 bare-Escape 段承接）
+  // ESCAPE 固定放行：正文内 Escape=返回搜索是产品保留职责，而 ProseMirror captureKeyDown 对 keyCode 27
+  // 无条件 preventDefault（prosemirror-view capturekeys.ts），不放行则被 App 的 defaultPrevented 早退吞掉。
+  // IME 安全由 isAppReservedShortcut 裸键路径的 isComposing/229 短路守卫保障：组合中 Escape 交还输入法，不误返回
   const reservedShortcuts = useMemo(() => {
-    const set = new Set<string>()
+    const set = new Set<string>(['ESCAPE'])
     if (shortcutCombos.back) set.add(shortcutCombos.back)
     if (shortcutCombos.newNote) set.add(shortcutCombos.newNote)
-    if (shortcutCombos.dismiss) set.add(shortcutCombos.dismiss)
     return set
   }, [shortcutCombos])
 
@@ -373,7 +372,7 @@ export const App: React.FC = () => {
         return
       }
 
-      const { newNote: shortcutNewNote, back: shortcutBack, dismiss: shortcutDismiss } = shortcutCombos
+      const { newNote: shortcutNewNote, back: shortcutBack } = shortcutCombos
 
       const currentCombo = normalizeCombo(e)
 
@@ -400,28 +399,10 @@ export const App: React.FC = () => {
             setSearchQuery('')
             return
           }
-          if (shortcutDismiss === 'ESCAPE') {
-            e.preventDefault()
-            suijian.window.hide().catch((err) => console.error('隐藏窗口失败:', err))
-            return
-          }
         }
       }
 
-      // 2. Custom Dismiss shortcut
-      if (currentCombo === shortcutDismiss) {
-        e.preventDefault()
-        if (view === 'editor' || view === 'settings') {
-          handleBackToSearch()
-          return
-        }
-        if (view === 'search') {
-          suijian.window.hide().catch((err) => console.error('隐藏窗口失败:', err))
-          return
-        }
-      }
-
-      // 3. Return to search shortcut (strictly match configured shortcut)
+      // 2. Return to search shortcut (strictly match configured shortcut)
       if (currentCombo === shortcutBack) {
         e.preventDefault()
         if (view !== 'search') {
@@ -430,14 +411,14 @@ export const App: React.FC = () => {
         return
       }
 
-      // 4. New Note shortcut (strictly match configured shortcut)
+      // 3. New Note shortcut (strictly match configured shortcut)
       if (currentCombo === shortcutNewNote) {
         e.preventDefault()
         handleCreateNote(true)
         return
       }
 
-      // 5. Arrow Up / Down / Enter / Space in Search view
+      // 4. Arrow Up / Down / Enter / Space in Search view
       if (view === 'search' && !isTagModalOpen && !confirmState.isOpen) {
         const target = e.target as HTMLElement
         const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
@@ -720,7 +701,6 @@ export const App: React.FC = () => {
             selectedTagId={selectedTagId}
             onSelectTag={setSelectedTagId}
             totalCount={notes.length}
-            dismissShortcut={settings?.shortcutDismiss || 'Escape'}
             newNoteShortcut={settings?.shortcutNewNote || 'Ctrl+N'}
             focusTrigger={focusTrigger}
           />
@@ -845,7 +825,7 @@ export const App: React.FC = () => {
         <span>
           <span className="kbd-shortcut">{settings?.shortcutNewNote || 'Ctrl+N'}</span> 新建 &nbsp;|&nbsp;{' '}
           <span className="kbd-shortcut">{settings?.shortcutBackToSearch || 'Ctrl+E'}</span> 搜索 &nbsp;|&nbsp;{' '}
-          <span className="kbd-shortcut">{settings?.shortcutDismiss || 'Escape'}</span> 隐藏
+          <span className="kbd-shortcut">{settings?.hotkey || 'Ctrl+Space'}</span> 呼出/收起
         </span>
         <span>随笺 v0.1.0</span>
       </div>

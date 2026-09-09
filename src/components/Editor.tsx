@@ -67,7 +67,7 @@ interface EditorProps {
 // 正文导航/编辑硬键：即使被配置成应用快捷键也优先保编辑语义（不放行）。
 // Ctrl/Alt 修饰组合不在列——用户配置的应快捷键在正文内胜出（双向审查 C-3 仲裁），
 // 被让位的编辑器功能（加粗等）在设置页录制时已即时警告（lib/shortcuts 冲突表）；
-// 默认配置（Ctrl+N/Ctrl+E/Escape）与编辑器键位零碰撞，默认用户体验不变
+// 默认配置（Ctrl+N/Ctrl+E；Escape 固定保留）与编辑器键位零碰撞，默认用户体验不变
 const EDITOR_CRITICAL_KEYS = new Set([
   'ENTER', 'TAB', 'BACKSPACE', 'DELETE',
   'ARROWUP', 'ARROWDOWN', 'ARROWLEFT', 'ARROWRIGHT',

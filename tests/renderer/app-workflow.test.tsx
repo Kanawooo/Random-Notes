@@ -251,27 +251,6 @@ describe('App Workflow & State Management', () => {
     })
   })
 
-  it('custom shortcutDismiss does not hide window on bare Escape, but honors configured key', async () => {
-    vi.mocked(suijian.settings.getAll).mockResolvedValue({
-      ...initialSettings,
-      shortcutDismiss: 'Ctrl+W'
-    })
-
-    render(<App />)
-
-    await waitFor(() => {
-      expect(screen.getByText('置顶便签')).toBeInTheDocument()
-    })
-
-    // Bare Escape should NOT trigger suijian.window.hide
-    fireEvent.keyDown(window, { key: 'Escape' })
-    expect(suijian.window.hide).not.toHaveBeenCalled()
-
-    // Configured Ctrl+W should trigger suijian.window.hide
-    fireEvent.keyDown(window, { key: 'w', ctrlKey: true })
-    expect(suijian.window.hide).toHaveBeenCalledTimes(1)
-  })
-
   it('bare Escape closes settings modal even if shortcutDismiss is customized', async () => {
     vi.mocked(suijian.settings.getAll).mockResolvedValue({
       ...initialSettings,
