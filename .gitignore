@@ -4,3 +4,10 @@ src-tauri/target
 src-tauri/gen/
 .tmp
 *.log
+
+# Trellis（AI 工作流工具，仅本地：任务/日志/会话数据不进公开仓）
+.trellis/
+.agents/
+.pi/
+AGENTS.md
+.gitattributes
