@@ -574,6 +574,7 @@ body, html, #root {
 }
 
 .toolbar-btn {
+  position: relative; /* 自定义 tooltip 定位锚点 */
   min-width: 26px;
   width: 26px;
   height: 26px;
@@ -613,6 +614,39 @@ body, html, #root {
   background-color: var(--selected-bg);
   border-color: var(--cobalt-focus);
   color: var(--cobalt-focus);
+}
+
+/* 自定义 tooltip：原生 title 在 26px 小按钮上不可靠（边缘 hover 抖动重置弹出计时；disabled 按钮不弹），
+   改 CSS hover 即显；文案源 data-tip，无障碍名由 aria-label 承担 */
+.toolbar-btn[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  padding: 5px 8px;
+  border-radius: 4px;
+  background-color: rgba(20, 20, 20, 0.9);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.09s ease 0.1s;
+}
+
+.toolbar-btn[data-tip]:hover::after {
+  opacity: 1;
+}
+
+/* 最右组按钮靠窗口边缘，tooltip 右对齐防溢出裁切 */
+.toolbar-group:last-child .toolbar-btn[data-tip]::after {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 
 /* Tiptap 正文容器 (绝对无边框，清除默认黑框) */
@@ -753,6 +787,50 @@ body, html, #root {
   border: 1px solid var(--border-color);
   margin: 0.8em 0;
   display: block;
+}
+
+/* 图片缩放 NodeView：wrapper 收成图片宽度（fit-content 保持块级独占一行），手柄贴住右缘与右下角 */
+.tiptap .image-node-view {
+  position: relative;
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0.8em 0;
+}
+
+.tiptap .image-node-view img {
+  margin: 0;
+}
+
+.resize-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background-color: var(--cobalt-focus);
+  border: 2px solid var(--card-bg);
+  border-radius: 50%;
+  opacity: 0;
+  /* 触屏/触控笔下不让浏览器把拖拽当成滚动的手势 */
+  touch-action: none;
+  transition: opacity 0.12s ease;
+}
+
+.resize-handle-se {
+  right: -5px;
+  bottom: -5px;
+  cursor: nwse-resize;
+}
+
+/* hover 与选中显示手柄；拖拽中经 body 类强制保留，避免选中态被拖走时手柄消失 */
+.tiptap .image-node-view:hover .resize-handle,
+.tiptap .image-node-view[data-selected="true"] .resize-handle,
+body.image-resizing .tiptap .image-node-view .resize-handle {
+  opacity: 1;
+}
+
+/* 拖拽期间禁正文本选中：pointerdown 早于 mousedown 的默认行为生效 */
+body.image-resizing {
+  user-select: none;
 }
 
 /* 错误与警告横条 */

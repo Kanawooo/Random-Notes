@@ -1,9 +1,10 @@
 ﻿import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useEditor, EditorContent } from '@tiptap/react'
+import { useEditor, EditorContent, NodeViewWrapper, ReactNodeViewRenderer } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import Image from '@tiptap/extension-image'
 import { mergeAttributes } from '@tiptap/core'
+import type { Editor as TipTapEditor, NodeViewProps } from '@tiptap/core'
 import Link from '@tiptap/extension-link'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
@@ -15,9 +16,165 @@ import { UiIcon } from './UiIcon'
 import type { Attachment, Note, Tag } from '../types'
 import { toErrMsg } from '../lib/errors'
 
+// 缩放下限 40px 防拖到不可见；粘贴默认宽取自然宽与编辑区 60% 的较小值（评审可调参数）
+const MIN_IMAGE_WIDTH = 40
+const PASTE_WIDTH_RATIO = 0.6
+
+// 可用宽 = ProseMirror 根元素减去左右 padding，与 CSS 里 img 的 max-width:100% 同口径；
+// 直接用 clientWidth 会让手柄拖到内容区外而图片已被 max-width 卡住，指针与图片边缘脱节
+function editorContentWidth(editorEl: HTMLElement): number {
+  const computed = window.getComputedStyle(editorEl)
+  const padX =
+    (Number.parseFloat(computed.paddingLeft) || 0) + (Number.parseFloat(computed.paddingRight) || 0)
+  return Math.max(0, editorEl.clientWidth - padX)
+}
+
+function clampImageWidth(width: number, maxWidth: number): number {
+  const cap = Math.max(maxWidth, MIN_IMAGE_WIDTH)
+  return Math.round(Math.min(Math.max(width, MIN_IMAGE_WIDTH), cap))
+}
+
+// setImage 的类型只认 src/alt/title，width 走同一条链的 updateAttributes：
+// 同一个 chain 只产生一个事务，撤销栈里「插图 + 定宽」是一步
+function applyImageCommand(editor: TipTapEditor, canonicalSrc: string, width: number): void {
+  const chain = editor.chain().focus().setImage({ src: canonicalSrc })
+  // width 为 0 表示量不到（编辑区不可见等），不写 attr，与旧便签的无 width 渲染一致
+  if (width > 0) {
+    chain.updateAttributes('image', { width })
+  }
+  chain.run()
+}
+
+// 新图插入前必须先定宽：文档里的 img 还没有布局宽度，另开一个同源探针实例量 naturalWidth；
+// 探针加载失败（协议未被拦截、图片损坏）时回退 60% 档，保证插入尺寸可预期
+function measurePasteWidth(canonicalSrc: string, contentWidth: number): Promise<number> {
+  const cap = Math.round(contentWidth * PASTE_WIDTH_RATIO)
+  if (cap <= 0) {
+    return Promise.resolve(0)
+  }
+  return new Promise((resolve) => {
+    const probe = document.createElement('img')
+    probe.onload = () => resolve(clampImageWidth(Math.min(probe.naturalWidth || cap, cap), cap))
+    probe.onerror = () => resolve(cap)
+    probe.src = toAttachmentDisplaySrc(canonicalSrc)
+  })
+}
+
+interface ImageResizeDrag {
+  pointerId: number
+  startX: number
+  startWidth: number
+  maxWidth: number
+  width: number
+}
+
+// 图片 NodeView：接管渲染（含 canonical→display 的 src 转换）并提供横向缩放手柄。
+// 拖拽中只改 DOM 预览、不进 ProseMirror 也不进 React state，松手一次 updateAttributes
+// 走既有 onUpdate→useAutoSave 防抖落盘——pointermove 每帧一次，逐帧提交等于保存风暴
+const ImageView: React.FC<NodeViewProps> = ({ node, selected, editor, updateAttributes }) => {
+  const imgRef = useRef<HTMLImageElement>(null)
+  const dragRef = useRef<ImageResizeDrag | null>(null)
+  const widthAttr = typeof node.attrs.width === 'number' && node.attrs.width > 0 ? node.attrs.width : null
+
+  // 宽度命令式写进 style：若由 JSX 托管，选中态等无关重渲染会把拖拽预览打回已提交值
+  useEffect(() => {
+    const img = imgRef.current
+    if (img) {
+      img.style.width = widthAttr ? `${widthAttr}px` : ''
+    }
+  }, [widthAttr])
+
+  const beginResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const img = imgRef.current
+    if (!img || event.button !== 0) {
+      return
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    // 起点取实际渲染宽：无 width attr 的旧图片首次拖拽即以当前显示宽为基准
+    const startWidth = img.offsetWidth || widthAttr || MIN_IMAGE_WIDTH
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth,
+      maxWidth: editorContentWidth(editor.view.dom),
+      width: startWidth
+    }
+    // 指针捕获到手柄上，指针滑出图片范围仍可持续收到 move/up
+    event.currentTarget.setPointerCapture(event.pointerId)
+    document.body.classList.add('image-resizing')
+  }
+
+  const moveResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current
+    const img = imgRef.current
+    if (!drag || !img || drag.pointerId !== event.pointerId) {
+      return
+    }
+    drag.width = clampImageWidth(drag.startWidth + (event.clientX - drag.startX), drag.maxWidth)
+    img.style.width = `${drag.width}px`
+  }
+
+  const endResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) {
+      return
+    }
+    dragRef.current = null
+    document.body.classList.remove('image-resizing')
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    if (drag.width !== drag.startWidth) {
+      updateAttributes({ width: drag.width })
+    }
+  }
+
+  const resizeHandlers = {
+    onPointerDown: beginResize,
+    onPointerMove: moveResize,
+    onPointerUp: endResize,
+    onPointerCancel: endResize
+  }
+
+  return (
+    <NodeViewWrapper className="image-node-view" data-selected={selected ? 'true' : 'false'}>
+      <img
+        ref={imgRef}
+        src={toAttachmentDisplaySrc(String(node.attrs.src ?? ''))}
+        alt={node.attrs.alt ?? undefined}
+        title={node.attrs.title ?? undefined}
+        draggable={false}
+      />
+      <div className="resize-handle resize-handle-se" {...resizeHandlers} />
+    </NodeViewWrapper>
+  )
+}
+
 // WebView2 只拦截 http://suijian-attachment.localhost/<id> 形式请求；
 // 文档 JSON 保持 canonical 的 suijian-attachment://<id>，仅在渲染时转换
+// width 载体是 HTML 属性而非内联样式：sanitize 的 img 白名单只留 src/alt/title/width/height/class，
+// style 会在粘贴往返中被剔掉；属性与 style 双写，前者存得住，后者让编辑器内即时生效
 const AttachmentImage = Image.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      width: {
+        default: null,
+        parseHTML: (element) => {
+          const raw = element.getAttribute('width')
+          const parsed = raw ? Number.parseInt(raw, 10) : NaN
+          return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+        },
+        renderHTML: (attributes) => {
+          if (typeof attributes.width !== 'number' || attributes.width <= 0) {
+            return {}
+          }
+          return { width: String(attributes.width), style: `width: ${attributes.width}px` }
+        }
+      }
+    }
+  },
   renderHTML({ HTMLAttributes }) {
     return [
       'img',
@@ -26,6 +183,9 @@ const AttachmentImage = Image.extend({
         src: toAttachmentDisplaySrc(String(HTMLAttributes.src ?? ''))
       })
     ]
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(ImageView)
   }
 }).configure({
   inline: false,
@@ -255,14 +415,14 @@ export const Editor: React.FC<EditorProps> = ({
                     .catch(() => suijian.attachments.addFromClipboard(currentNoteId))
                 : suijian.attachments.addFromClipboard(currentNoteId)
               upload
-                .then((att) => {
+                .then(async (att) => {
                   // 异步完成后若已切换便签或 editor 失效，不向旧文档插入
                   if (noteRef.current.id !== currentNoteId || !editor) return
-                  editor
-                    .chain()
-                    .focus()
-                    .setImage({ src: `suijian-attachment://${att.id}` })
-                    .run()
+                  const src = `suijian-attachment://${att.id}`
+                  const width = await measurePasteWidth(src, editorContentWidth(editor.view.dom))
+                  // 量宽同样异步，插入前复核便签归属与 editor 存活
+                  if (noteRef.current.id !== currentNoteId || editor.isDestroyed) return
+                  applyImageCommand(editor, src, width)
                 })
                 .catch((err) => {
                   setErrorMsg(`粘贴图片失败: ${toErrMsg(err)}`)
@@ -279,37 +439,13 @@ export const Editor: React.FC<EditorProps> = ({
   const handlePasteImage = useCallback(async () => {
     try {
       const att = await suijian.attachments.addFromClipboard(noteRef.current.id)
-      if (editor) {
-        editor
-          .chain()
-          .focus()
-          .setImage({ src: `suijian-attachment://${att.id}` })
-          .run()
-      }
+      // 取回附件与量宽都是异步的，插入前复核 editor 仍存活（切换便签会销毁旧实例）
+      if (!editor || editor.isDestroyed) return
+      const src = `suijian-attachment://${att.id}`
+      const width = await measurePasteWidth(src, editorContentWidth(editor.view.dom))
+      applyImageCommand(editor, src, width)
     } catch (err) {
       setErrorMsg(`无法从剪贴板粘贴图片: ${toErrMsg(err)}`)
-    }
-  }, [editor])
-
-  const handleSetLink = useCallback(() => {
-    if (!editor) return
-    const previousUrl = String(editor.getAttributes('link')['href'] || '')
-    const url = window.prompt('请输入链接地址 (http, https, mailto):', previousUrl)
-    if (url === null) return
-    const trimmed = url.trim()
-    if (trimmed === '') {
-      editor.chain().focus().extendMarkRange('link').unsetLink().run()
-      return
-    }
-    try {
-      const parsed = new URL(trimmed)
-      if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
-        setErrorMsg('安全限制：仅允许 http, https 或 mailto 协议')
-        return
-      }
-      editor.chain().focus().extendMarkRange('link').setLink({ href: parsed.href }).run()
-    } catch {
-      setErrorMsg('请输入有效的 URL 地址')
     }
   }, [editor])
 
@@ -466,7 +602,7 @@ export const Editor: React.FC<EditorProps> = ({
             className={`btn btn-icon ${isPinned ? 'btn-active' : ''}`}
             onClick={handleTogglePin}
             aria-label={isPinned ? '取消置顶' : '置顶便签'}
-            title={isPinned ? '取消置顶' : '置顶便签'}
+            data-tip={isPinned ? '取消置顶' : '置顶便签'}
           >
             <UiIcon name="pin" size={15} />
           </button>
@@ -478,7 +614,7 @@ export const Editor: React.FC<EditorProps> = ({
               className="btn"
               onClick={handleToggleArchive}
               aria-label={note.archived_at ? '取消归档' : '归档便签'}
-              title="归档便签"
+              data-tip="归档便签"
             >
               {note.archived_at ? '取消归档' : '归档'}
             </button>
@@ -500,7 +636,7 @@ export const Editor: React.FC<EditorProps> = ({
               className="btn btn-icon"
               onClick={handleTrash}
               aria-label="移入回收站"
-              title="移入回收站"
+              data-tip="移入回收站"
             >
               <UiIcon name="trash" size={15} />
             </button>
@@ -542,7 +678,7 @@ export const Editor: React.FC<EditorProps> = ({
                   className="tag-remove-btn"
                   onClick={() => handleRemoveTag(tag.id)}
                   aria-label={`移除标签 ${tag.name}`}
-                  title={`移除标签 ${tag.name}`}
+                  data-tip={`移除标签 ${tag.name}`}
                 >
                   <UiIcon name="close" size={10} />
                 </button>
@@ -595,7 +731,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('heading', { level: 1 }) ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
               aria-label="一级标题"
-              title="一级标题"
+              data-tip="一级标题"
             >
               H1
             </button>
@@ -604,7 +740,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('heading', { level: 2 }) ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
               aria-label="二级标题"
-              title="二级标题"
+              data-tip="二级标题"
             >
               H2
             </button>
@@ -613,7 +749,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('heading', { level: 3 }) ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
               aria-label="三级标题"
-              title="三级标题"
+              data-tip="三级标题"
             >
               H3
             </button>
@@ -624,7 +760,8 @@ export const Editor: React.FC<EditorProps> = ({
               type="button"
               className={`toolbar-btn ${editor.isActive('bold') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleBold().run()}
-              title="加粗 (Ctrl+B)"
+              aria-label="加粗 (Ctrl+B)"
+              data-tip="加粗 (Ctrl+B)"
             >
               <b>B</b>
             </button>
@@ -632,18 +769,10 @@ export const Editor: React.FC<EditorProps> = ({
               type="button"
               className={`toolbar-btn ${editor.isActive('italic') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleItalic().run()}
-              title="斜体 (Ctrl+I)"
+              aria-label="斜体 (Ctrl+I)"
+              data-tip="斜体 (Ctrl+I)"
             >
               <i>I</i>
-            </button>
-            <button
-              type="button"
-              className={`toolbar-btn ${editor.isActive('link') ? 'is-active' : ''}`}
-              onClick={handleSetLink}
-              aria-label="添加链接"
-              title="添加链接"
-            >
-              <UiIcon name="link" size={14} />
             </button>
           </div>
 
@@ -653,7 +782,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('bulletList') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleBulletList().run()}
               aria-label="无序列表"
-              title="无序列表"
+              data-tip="无序列表"
             >
               <UiIcon name="list" size={15} />
             </button>
@@ -662,7 +791,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('orderedList') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleOrderedList().run()}
               aria-label="有序列表"
-              title="有序列表"
+              data-tip="有序列表"
             >
               <UiIcon name="list-ordered" size={15} />
             </button>
@@ -671,7 +800,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('taskList') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleTaskList().run()}
               aria-label="任务列表"
-              title="任务列表"
+              data-tip="任务列表"
             >
               <UiIcon name="check-square" size={14} />
             </button>
@@ -683,7 +812,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('blockquote') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleBlockquote().run()}
               aria-label="引用"
-              title="引用"
+              data-tip="引用"
             >
               <UiIcon name="quote" size={14} />
             </button>
@@ -692,7 +821,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('code') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleCode().run()}
               aria-label="行内代码"
-              title="行内代码"
+              data-tip="行内代码"
             >
               <UiIcon name="code" size={14} />
             </button>
@@ -701,7 +830,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn toolbar-btn-text ${editor.isActive('codeBlock') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleCodeBlock().run()}
               aria-label="代码块"
-              title="代码块"
+              data-tip="代码块"
             >
               <UiIcon name="code-block" size={14} />
               <span>代码块</span>
@@ -714,7 +843,7 @@ export const Editor: React.FC<EditorProps> = ({
               className="toolbar-btn toolbar-btn-text"
               onClick={handlePasteImage}
               aria-label="插入剪贴板图片"
-              title="插入剪贴板图片"
+              data-tip="插入剪贴板图片"
             >
               <UiIcon name="image" size={14} />
               <span>贴图</span>
@@ -728,7 +857,7 @@ export const Editor: React.FC<EditorProps> = ({
               disabled={!editor.can().undo()}
               onClick={() => editor.chain().focus().undo().run()}
               aria-label="撤销 (Ctrl+Z)"
-              title="撤销 (Ctrl+Z)"
+              data-tip="撤销 (Ctrl+Z)"
             >
               <UiIcon name="undo" size={14} />
             </button>
@@ -738,7 +867,7 @@ export const Editor: React.FC<EditorProps> = ({
               disabled={!editor.can().redo()}
               onClick={() => editor.chain().focus().redo().run()}
               aria-label="重做 (Ctrl+Y)"
-              title="重做 (Ctrl+Y)"
+              data-tip="重做 (Ctrl+Y)"
             >
               <UiIcon name="redo" size={14} />
             </button>
