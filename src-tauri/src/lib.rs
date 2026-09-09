@@ -52,7 +52,10 @@ const HIDE_GRACE_MS: u64 = 150;
 
 fn toggle_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
-        if win.is_visible().unwrap_or(false) {
+        // 方向判据用 is_focused 而非 is_visible：窗口被其他应用遮盖时仍然 visible，
+        // 旧逻辑此时按下热键会误入隐藏分支（需再按一次才能唤出）；
+        // 语义改为：前台且聚焦才隐藏，隐藏/最小化/被遮盖统一唤到最前
+        if win.is_focused().unwrap_or(false) {
             let _ = win.emit("event:request-hide", ());
             hide_main_window(app);
         } else {
