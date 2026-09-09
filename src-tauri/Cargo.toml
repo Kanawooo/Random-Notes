@@ -1,6 +1,6 @@
 [package]
 name = "suijian"
-version = "0.1.0"
+version = "0.1.1"
 description = "随笺 - 桌面便签"
 authors = ["Suijian Team"]
 license = "MIT"
