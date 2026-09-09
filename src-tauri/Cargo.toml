@@ -28,7 +28,8 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 arboard = "3.4"
 base64 = "0.22"
-open = "5.3"
+# ShellExecuteExW 直开；默认路径冷启 powershell.exe，打开链接/目录滞后约 1s
+open = { version = "5.3", features = ["shellexecute-on-windows"] }
 directories = "5.0"
 rfd = "0.15"
 

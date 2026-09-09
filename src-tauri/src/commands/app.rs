@@ -26,7 +26,9 @@ pub fn app_get_recovery_status(state: State<AppState>) -> Result<RecoveryStatus,
 
 #[tauri::command]
 pub fn app_open_user_data_folder() -> Result<(), String> {
-    open::that(get_user_data_dir()).map_err(|e| format!("无法打开用户数据文件夹: {}", e))
+    // that_detached + shellexecute-on-windows feature 才真正走 ShellExecuteExW；
+    // open::that 无论 feature 与否都固定 spawn powershell.exe（冷启 ~1s）
+    open::that_detached(get_user_data_dir()).map_err(|e| format!("无法打开用户数据文件夹: {}", e))
 }
 
 #[tauri::command]
@@ -62,7 +64,7 @@ pub fn app_open_external(url: String) -> Result<(), String> {
         return Err("仅允许打开 http, https, mailto 协议的外部链接".to_string());
     }
 
-    open::that(trimmed).map_err(|e| format!("无法打开外部链接: {}", e))
+    open::that_detached(trimmed).map_err(|e| format!("无法打开外部链接: {}", e))
 }
 
 #[tauri::command]
