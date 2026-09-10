@@ -392,8 +392,12 @@ pub fn run() {
                 }
             }
 
-            // Clean up any orphan attachments on startup
-            let _ = state.attachment_service.cleanup_orphans();
+            // 启动清理仅在数据库健康时执行：恢复模式下 DB 是空的内存库，
+            // 空引用集会把这些文件全部误判为孤儿（含 .old-* 救援副本）
+            if state.read_only_recovery_error.is_none() {
+                let _ = state.attachment_service.reconcile_restore_artifacts();
+                let _ = state.attachment_service.cleanup_orphans();
+            }
 
             // Setup System Tray
             let show_item = MenuItem::with_id(handle, "show", "显示随笺", true, None::<&str>)?;
@@ -595,28 +599,19 @@ pub fn run() {
             tags::tags_assign,
             attachments::attachments_add_from_clipboard,
             attachments::attachments_add_from_bytes,
-            attachments::attachments_remove,
-            attachments::attachments_get_url,
             backup::backup_export,
             backup::backup_inspect_select,
             backup::backup_restore_confirm,
             settings::settings_get_all,
-            settings::settings_get,
             settings::settings_update,
             settings::settings_update_action_shortcuts,
             settings::settings_get_hotkey_status,
             settings::settings_register_hotkey,
-            window::window_hide,
             window::window_confirm_hide,
             window::window_set_unsaved_error,
-            window::window_show,
-            window::set_dialog_open,
-            window::window_get_state,
-            window::window_update_state,
             app::app_get_info,
             app::app_get_recovery_status,
             app::app_open_user_data_folder,
-            app::app_quit,
             app::app_confirm_quit,
             app::app_open_external,
             app::renderer_ready,

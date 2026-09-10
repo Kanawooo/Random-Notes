@@ -4,7 +4,7 @@ use crate::db::models::{
     BackupNoteData, BackupRestoreResult, BackupTagItem, Note, Tag,
 };
 use crate::db::DbService;
-use crate::services::attachment_service::AttachmentService;
+use crate::services::attachment_service::{AttachmentService, MAX_ATTACHMENT_SIZE_BYTES};
 use crate::services::notes_service::NotesService;
 use crate::services::tags_service::TagsService;
 use crate::utils::paths::{get_user_data_dir, validate_uuid};
@@ -12,17 +12,18 @@ use rusqlite::params;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 pub const BACKUP_FORMAT_VERSION: i64 = 1;
-pub const MAX_ARCHIVE_FILE_SIZE: u64 = 500 * 1024 * 1024; // 500MB
-pub const MAX_TOTAL_DECOMPRESSED_SIZE: u64 = 500 * 1024 * 1024; // 500MB
-pub const MAX_SINGLE_ENTRY_SIZE: usize = 25 * 1024 * 1024; // 25MB
-pub const MAX_ENTRY_COUNT: usize = 20000;
+pub const MAX_ARCHIVE_FILE_SIZE: u64 = 8 * 1024 * 1024 * 1024; // 8GiB
+pub const MAX_TOTAL_DECOMPRESSED_SIZE: u64 = 8 * 1024 * 1024 * 1024; // 8GiB
+// 单条目护栏 = 附件上限×2：自家导出附件永远够不着，同时保住读取路径整条目进内存的内存上限
+pub const MAX_SINGLE_ENTRY_SIZE: usize = MAX_ATTACHMENT_SIZE_BYTES * 2;
+pub const MAX_ENTRY_COUNT: usize = 100_000;
 
 pub struct TempDirGuard(PathBuf);
 
@@ -277,12 +278,60 @@ impl BackupService {
             .ok_or_else(|| "目标文件路径无效".to_string())?;
         fs::create_dir_all(parent_dir).map_err(|e| format!("创建备份目标目录失败: {}", e))?;
 
+        // 导出预扫描：读取侧护栏不放松导出侧，任何“能导出、不能恢复”的包在此拦截。
+        // 条目数按 zip 实际条目计（每条便签写 JSON+HTML 两条），与读取侧 archive.len() 同一口径
+        let (note_count, note_content_bytes) = self.notes_service.count_and_size()?;
+        let attachment_summaries = self.attachment_service.list_all_summary()?;
+        let attachment_bytes: u64 = attachment_summaries.iter().map(|(_, size)| *size as u64).sum();
+
+        let zip_entry_count = note_count
+            .saturating_mul(2)
+            .saturating_add(attachment_summaries.len())
+            .saturating_add(1);
+        if zip_entry_count > MAX_ENTRY_COUNT {
+            return Err(format!(
+                "备份条目数 {}（便签 {} ×2 + 附件 {} + 清单 1）超过上限 {}，请分批备份或清理数据",
+                zip_entry_count,
+                note_count,
+                attachment_summaries.len(),
+                MAX_ENTRY_COUNT
+            ));
+        }
+
+        for (relative_path, byte_size) in &attachment_summaries {
+            if *byte_size > MAX_SINGLE_ENTRY_SIZE as i64 {
+                return Err(format!(
+                    "附件 {}（{:.1}MB）超过单条目上限 {:.1}MB，请先压缩该图片",
+                    relative_path,
+                    *byte_size as f64 / (1024.0 * 1024.0),
+                    MAX_SINGLE_ENTRY_SIZE as f64 / (1024.0 * 1024.0)
+                ));
+            }
+        }
+
+        if note_content_bytes + attachment_bytes > MAX_TOTAL_DECOMPRESSED_SIZE {
+            return Err(format!(
+                "备份解压总量约 {:.1}GB 超过上限 {:.0}GB，请分批备份",
+                (note_content_bytes + attachment_bytes) as f64 / (1024.0 * 1024.0 * 1024.0),
+                MAX_TOTAL_DECOMPRESSED_SIZE as f64 / (1024.0 * 1024.0 * 1024.0)
+            ));
+        }
+
         let temp_export_path = parent_dir.join(format!(".export-{}.tmp", uuid::Uuid::new_v4()));
 
-        let notes = self
-            .notes_service
-            .list(crate::db::models::NoteScope::All, 100000)?;
         let tags = self.tags_service.list()?;
+        // 分页拉取导出：避免把全部便签（含 content_json）一次性读进内存
+        const EXPORT_PAGE_SIZE: usize = 500;
+        let mut exported_note_count = 0usize;
+
+        // 附件一次查询后按便签分组，避免逐便签查询的 N+1
+        let mut attachments_by_note: HashMap<String, Vec<_>> = HashMap::new();
+        for att in self.attachment_service.list_all()? {
+            attachments_by_note
+                .entry(att.note_id.clone())
+                .or_default()
+                .push(att);
+        }
 
         let mut manifest_files: Vec<BackupFileEntry> = Vec::new();
         let mut total_attachments = 0;
@@ -295,142 +344,190 @@ impl BackupService {
             let options =
                 SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-            for note in &notes {
-                let note_tags = note.tags.clone().unwrap_or_default();
-                let note_attachments = self.attachment_service.list_for_note(&note.id)?;
-                total_attachments += note_attachments.len();
+            // 先固定 ID 快照再分批取正文：OFFSET 分页在导出期间并发置顶/编辑/删除时会重排，
+            // 导致条目重复（zip 重名，导出失败）或静默漏读；ID 快照后每篇至多读一次、集合固定
+            let note_ids = self.notes_service.list_ids(crate::db::models::NoteScope::All)?;
+            for chunk in note_ids.chunks(EXPORT_PAGE_SIZE) {
+                let notes = self.notes_service.list_by_ids(chunk)?;
 
-                let backup_tags: Vec<BackupTagItem> = note_tags
-                    .iter()
-                    .map(|t| BackupTagItem {
-                        id: t.id.clone(),
-                        name: t.name.clone(),
-                        color: Self::sanitize_hex_color(&t.color),
-                        created_at: Some(t.created_at.clone()),
-                    })
-                    .collect();
+                for note in &notes {
+                    let note_tags = note.tags.clone().unwrap_or_default();
+                    let note_attachments = attachments_by_note.remove(&note.id).unwrap_or_default();
+                    total_attachments += note_attachments.len();
 
-                let backup_attachments: Vec<BackupAttachmentItem> = note_attachments
-                    .iter()
-                    .map(|a| BackupAttachmentItem {
-                        id: a.id.clone(),
-                        relative_path: a.relative_path.clone(),
-                        mime_type: a.mime_type.clone(),
-                        byte_size: a.byte_size,
-                        width: a.width,
-                        height: a.height,
-                        sha256: a.sha256.clone(),
-                        created_at: a.created_at.clone(),
-                    })
-                    .collect();
+                    let backup_tags: Vec<BackupTagItem> = note_tags
+                        .iter()
+                        .map(|t| BackupTagItem {
+                            id: t.id.clone(),
+                            name: t.name.clone(),
+                            color: Self::sanitize_hex_color(&t.color),
+                            created_at: Some(t.created_at.clone()),
+                        })
+                        .collect();
 
-                let backup_note = BackupNoteData {
-                    id: note.id.clone(),
-                    title: note.title.clone(),
-                    content_json: note.content_json.clone(),
-                    plain_text: note.plain_text.clone(),
-                    title_manually_edited: note.title_manually_edited,
-                    is_pinned: note.is_pinned,
-                    archived_at: note.archived_at.clone(),
-                    deleted_at: note.deleted_at.clone(),
-                    revision: note.revision,
-                    created_at: note.created_at.clone(),
-                    updated_at: note.updated_at.clone(),
-                    tags: backup_tags,
-                    attachments: Some(backup_attachments.clone()),
-                };
+                    let backup_attachments: Vec<BackupAttachmentItem> = note_attachments
+                        .iter()
+                        .map(|a| BackupAttachmentItem {
+                            id: a.id.clone(),
+                            relative_path: a.relative_path.clone(),
+                            mime_type: a.mime_type.clone(),
+                            byte_size: a.byte_size,
+                            width: a.width,
+                            height: a.height,
+                            sha256: a.sha256.clone(),
+                            created_at: a.created_at.clone(),
+                        })
+                        .collect();
 
-                // Write JSON
-                let json_bytes =
-                    serde_json::to_vec_pretty(&backup_note).map_err(|e| e.to_string())?;
-                let json_path = format!("notes/{}.json", note.id);
-                zip.start_file(&json_path, options)
-                    .map_err(|e| e.to_string())?;
-                zip.write_all(&json_bytes).map_err(|e| e.to_string())?;
+                    let backup_note = BackupNoteData {
+                        id: note.id.clone(),
+                        title: note.title.clone(),
+                        content_json: note.content_json.clone(),
+                        plain_text: note.plain_text.clone(),
+                        title_manually_edited: note.title_manually_edited,
+                        is_pinned: note.is_pinned,
+                        archived_at: note.archived_at.clone(),
+                        deleted_at: note.deleted_at.clone(),
+                        revision: note.revision,
+                        created_at: note.created_at.clone(),
+                        updated_at: note.updated_at.clone(),
+                        tags: backup_tags,
+                        attachments: Some(backup_attachments.clone()),
+                    };
 
-                let mut h_json = Sha256::new();
-                h_json.update(&json_bytes);
-                manifest_files.push(BackupFileEntry {
-                    path: json_path,
-                    byte_size: json_bytes.len(),
-                    sha256: format!("{:x}", h_json.finalize()),
-                });
-
-                // Write HTML
-                let html_str = Self::render_html_export(note, &note_tags);
-                let html_bytes = html_str.as_bytes();
-                let html_path = format!("notes/{}.html", note.id);
-                zip.start_file(&html_path, options)
-                    .map_err(|e| e.to_string())?;
-                zip.write_all(html_bytes).map_err(|e| e.to_string())?;
-
-                let mut h_html = Sha256::new();
-                h_html.update(html_bytes);
-                manifest_files.push(BackupFileEntry {
-                    path: html_path,
-                    byte_size: html_bytes.len(),
-                    sha256: format!("{:x}", h_html.finalize()),
-                });
-
-                // Write attachment files into assets/ with strict validation
-                for att in backup_attachments {
-                    let physical_path = attach_dir.join(&att.relative_path);
-                    if !physical_path.exists() {
-                        return Err(format!(
-                            "导出失败: 数据库登记的附件物理文件缺失: {}",
-                            att.relative_path
-                        ));
-                    }
-
-                    let data = fs::read(&physical_path).map_err(|e| {
-                        format!("导出失败: 读取附件 {} 失败: {}", att.relative_path, e)
-                    })?;
-
-                    if data.len() as i64 != att.byte_size {
-                        return Err(format!(
-                            "导出失败: 附件 {} 大小与数据库记录不符 (实际: {}, 记录: {})",
-                            att.relative_path,
-                            data.len(),
-                            att.byte_size
-                        ));
-                    }
-
-                    let mut h_asset = Sha256::new();
-                    h_asset.update(&data);
-                    let actual_sha = format!("{:x}", h_asset.finalize());
-                    if !actual_sha.eq_ignore_ascii_case(&att.sha256) {
-                        return Err(format!(
-                            "导出失败: 附件 {} 哈希校验不匹配",
-                            att.relative_path
-                        ));
-                    }
-
-                    if AttachmentService::validate_magic_bytes(&data).map(|(m, _)| m)
-                        != Some(&att.mime_type)
-                    {
-                        return Err(format!(
-                            "导出失败: 附件 {} MIME 类型校验失败",
-                            att.relative_path
-                        ));
-                    }
-
-                    let asset_path = format!("assets/{}", att.relative_path);
-                    zip.start_file(&asset_path, options)
+                    // Write JSON
+                    let json_bytes =
+                        serde_json::to_vec_pretty(&backup_note).map_err(|e| e.to_string())?;
+                    let json_path = format!("notes/{}.json", note.id);
+                    zip.start_file(&json_path, options)
                         .map_err(|e| e.to_string())?;
-                    zip.write_all(&data).map_err(|e| e.to_string())?;
+                    zip.write_all(&json_bytes).map_err(|e| e.to_string())?;
 
+                    let mut h_json = Sha256::new();
+                    h_json.update(&json_bytes);
                     manifest_files.push(BackupFileEntry {
-                        path: asset_path,
-                        byte_size: data.len(),
-                        sha256: actual_sha,
+                        path: json_path,
+                        byte_size: json_bytes.len(),
+                        sha256: format!("{:x}", h_json.finalize()),
                     });
+
+                    // Write HTML
+                    let html_str = Self::render_html_export(note, &note_tags);
+                    let html_bytes = html_str.as_bytes();
+                    let html_path = format!("notes/{}.html", note.id);
+                    zip.start_file(&html_path, options)
+                        .map_err(|e| e.to_string())?;
+                    zip.write_all(html_bytes).map_err(|e| e.to_string())?;
+
+                    let mut h_html = Sha256::new();
+                    h_html.update(html_bytes);
+                    manifest_files.push(BackupFileEntry {
+                        path: html_path,
+                        byte_size: html_bytes.len(),
+                        sha256: format!("{:x}", h_html.finalize()),
+                    });
+
+                    // Write attachment files into assets/ with strict validation
+                    for att in backup_attachments {
+                        if !Self::validate_attachment_relative_path(&att.relative_path) {
+                            return Err(format!(
+                                "导出失败: 附件 {} 的登记路径不符合规范（附件数据可能被外部修改过），请检查数据目录后重试",
+                                att.relative_path
+                            ));
+                        }
+
+                        let physical_path = attach_dir.join(&att.relative_path);
+                        if !physical_path.exists() {
+                            return Err(format!(
+                                "导出失败: 数据库登记的附件物理文件缺失: {}",
+                                att.relative_path
+                            ));
+                        }
+
+                        let data = fs::read(&physical_path).map_err(|e| {
+                            format!("导出失败: 读取附件 {} 失败: {}", att.relative_path, e)
+                        })?;
+
+                        if data.len() as i64 != att.byte_size {
+                            return Err(format!(
+                                "导出失败: 附件 {} 大小与数据库记录不符 (实际: {}, 记录: {})",
+                                att.relative_path,
+                                data.len(),
+                                att.byte_size
+                            ));
+                        }
+
+                        let mut h_asset = Sha256::new();
+                        h_asset.update(&data);
+                        let actual_sha = format!("{:x}", h_asset.finalize());
+                        if !actual_sha.eq_ignore_ascii_case(&att.sha256) {
+                            return Err(format!(
+                                "导出失败: 附件 {} 哈希校验不匹配",
+                                att.relative_path
+                            ));
+                        }
+
+                        if AttachmentService::validate_magic_bytes(&data).map(|(m, _)| m)
+                            != Some(&att.mime_type)
+                        {
+                            return Err(format!(
+                                "导出失败: 附件 {} MIME 类型校验失败",
+                                att.relative_path
+                            ));
+                        }
+
+                        let asset_path = format!("assets/{}", att.relative_path);
+                        zip.start_file(&asset_path, options)
+                            .map_err(|e| e.to_string())?;
+                        zip.write_all(&data).map_err(|e| e.to_string())?;
+
+                        manifest_files.push(BackupFileEntry {
+                            path: asset_path,
+                            byte_size: data.len(),
+                            sha256: actual_sha,
+                        });
+                    }
                 }
+                exported_note_count += notes.len();
+            }
+
+            // 收尾校验：快照固定后，快照内 id 应恰好各写入一次；数量不符说明导出期间数据发生了变化
+            if exported_note_count != note_ids.len() {
+                return Err(format!(
+                    "导出期间数据发生变化（快照 {} 篇，实际写入 {} 篇），请重试导出",
+                    note_ids.len(),
+                    exported_note_count
+                ));
+            }
+
+            // 单条目精确复核：与读取侧逐条目解压上限同口径（同一常量、同一 > 判界），
+            // 防止单条便签序列化后超限产出“导出成功、恢复被拒”的包
+            for f in &manifest_files {
+                if f.byte_size > MAX_SINGLE_ENTRY_SIZE {
+                    return Err(format!(
+                        "条目 {}（{:.1}MB）超过单条目上限 {:.1}MB，请精简该便签内容后重新导出",
+                        f.path,
+                        f.byte_size as f64 / (1024.0 * 1024.0),
+                        MAX_SINGLE_ENTRY_SIZE as f64 / (1024.0 * 1024.0)
+                    ));
+                }
+            }
+
+            // 精确总量复核：预扫描是下界估计（未计 HTML 渲染与 JSON 序列化开销），此处按 manifest
+            // 实际 byte_size 汇总，与读取侧 total_decompressed 同口径；超限走既有错误路径清理临时文件
+            let manifest_total_bytes: u64 = manifest_files.iter().map(|f| f.byte_size as u64).sum();
+            if manifest_total_bytes > MAX_TOTAL_DECOMPRESSED_SIZE {
+                return Err(format!(
+                    "备份解压总量 {:.1}GB 超过上限 {:.0}GB，请分批备份",
+                    manifest_total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+                    MAX_TOTAL_DECOMPRESSED_SIZE as f64 / (1024.0 * 1024.0 * 1024.0)
+                ));
             }
 
             // Write manifest.json
             let manifest = BackupManifest {
                 version: BACKUP_FORMAT_VERSION,
-                app_version: "0.1.0".to_string(),
+                app_version: env!("CARGO_PKG_VERSION").to_string(),
                 exported_at: chrono::Utc::now().to_rfc3339(),
                 tags: Some(
                     tags.into_iter()
@@ -452,6 +549,18 @@ impl BackupService {
 
             zip.finish()
                 .map_err(|e| format!("完成备份压缩失败: {}", e))?;
+
+            // 预扫描按原始体量估算，压缩后仍以实际文件体积兜底复核
+            let zip_size = fs::metadata(&temp_export_path)
+                .map_err(|e| format!("读取备份文件大小失败: {}", e))?
+                .len();
+            if zip_size > MAX_ARCHIVE_FILE_SIZE {
+                return Err(format!(
+                    "备份文件大小 {:.2}GB 超过上限 {:.0}GB，请分批备份",
+                    zip_size as f64 / (1024.0 * 1024.0 * 1024.0),
+                    MAX_ARCHIVE_FILE_SIZE as f64 / (1024.0 * 1024.0 * 1024.0)
+                ));
+            }
             Ok(())
         })();
 
@@ -461,17 +570,34 @@ impl BackupService {
         }
 
         if destination_path.exists() {
-            let _ = fs::remove_file(destination_path);
+            // 安全交换：先把旧备份改名为同目录 .bak 临时名，rename 失败时不丢旧文件
+            let old_backup_path = parent_dir.join(format!(".bak-{}.tmp", uuid::Uuid::new_v4()));
+            fs::rename(destination_path, &old_backup_path).map_err(|e| {
+                let _ = fs::remove_file(&temp_export_path);
+                format!("保存最终备份文件失败: {}", e)
+            })?;
+
+            match fs::rename(&temp_export_path, destination_path) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&old_backup_path);
+                }
+                Err(e) => {
+                    let _ = fs::rename(&old_backup_path, destination_path);
+                    let _ = fs::remove_file(&temp_export_path);
+                    return Err(format!("保存最终备份文件失败: {}", e));
+                }
+            }
+        } else {
+            fs::rename(&temp_export_path, destination_path).map_err(|e| {
+                let _ = fs::remove_file(&temp_export_path);
+                format!("保存最终备份文件失败: {}", e)
+            })?;
         }
-        fs::rename(&temp_export_path, destination_path).map_err(|e| {
-            let _ = fs::remove_file(&temp_export_path);
-            format!("保存最终备份文件失败: {}", e)
-        })?;
 
         Ok(BackupExportResult {
             canceled: false,
             file_path: Some(destination_path.to_string_lossy().to_string()),
-            note_count: Some(notes.len()),
+            note_count: Some(exported_note_count),
             attachment_count: Some(total_attachments),
         })
     }
@@ -482,13 +608,13 @@ impl BackupService {
             File::open(backup_zip_path).map_err(|e| format!("无法打开备份文件: {}", e))?;
         let metadata = zip_file.metadata().map_err(|e| e.to_string())?;
         if metadata.len() > MAX_ARCHIVE_FILE_SIZE {
-            return Err("备份文件大小超过 500MB 上限".to_string());
+            return Err(format!("备份文件大小超过 {}GB 上限", MAX_ARCHIVE_FILE_SIZE / (1024 * 1024 * 1024)));
         }
 
         let mut archive =
             ZipArchive::new(zip_file).map_err(|e| format!("无效的 ZIP 压缩包: {}", e))?;
         if archive.len() > MAX_ENTRY_COUNT {
-            return Err("备份包内文件数超过 20,000 上限".to_string());
+            return Err(format!("备份包内文件数超过 {} 上限", MAX_ENTRY_COUNT));
         }
 
         // 1. First pass: extract manifest
@@ -501,7 +627,7 @@ impl BackupService {
 
             if name == "manifest.json" {
                 if file.size() > MAX_SINGLE_ENTRY_SIZE as u64 {
-                    return Err("manifest.json 大小超过 25MB 上限".to_string());
+                    return Err(format!("manifest.json 大小超过 {}MB 上限", MAX_SINGLE_ENTRY_SIZE / (1024 * 1024)));
                 }
                 let mut content = Vec::new();
                 let mut buf = [0u8; 65536];
@@ -513,7 +639,7 @@ impl BackupService {
                     }
                     total_read += n;
                     if total_read > MAX_SINGLE_ENTRY_SIZE {
-                        return Err("manifest.json 解压大小超过 25MB 上限".to_string());
+                        return Err(format!("manifest.json 解压大小超过 {}MB 上限", MAX_SINGLE_ENTRY_SIZE / (1024 * 1024)));
                     }
                     content.extend_from_slice(&buf[..n]);
                 }
@@ -547,7 +673,8 @@ impl BackupService {
 
         // Referenced assets mapped to (byte_size, sha256, mime_type)
         let mut referenced_assets: HashMap<String, (i64, String, String)> = HashMap::new();
-        let mut seen_asset_entries: HashMap<String, Vec<u8>> = HashMap::new();
+        // 实际 assets 条目只保留元数据（长度、sha256、魔数 mime），避免把全部解压字节留在内存
+        let mut seen_asset_meta: HashMap<String, (usize, String, Option<String>)> = HashMap::new();
 
         let mut total_decompressed: u64 = 0;
         let mut note_count = 0;
@@ -588,10 +715,10 @@ impl BackupService {
                 total_decompressed += n as u64;
 
                 if entry_read > MAX_SINGLE_ENTRY_SIZE {
-                    return Err(format!("条目 {} 解压大小超过 25MB 上限", name));
+                    return Err(format!("条目 {} 解压大小超过 {}MB 上限", name, MAX_SINGLE_ENTRY_SIZE / (1024 * 1024)));
                 }
                 if total_decompressed > MAX_TOTAL_DECOMPRESSED_SIZE {
-                    return Err("解压总量超过 500MB 上限 (防 Zip 炸弹)".to_string());
+                    return Err(format!("解压总量超过 {}GB 上限 (防 Zip 炸弹)", MAX_TOTAL_DECOMPRESSED_SIZE / (1024 * 1024 * 1024)));
                 }
 
                 content.extend_from_slice(&buf[..n]);
@@ -656,7 +783,15 @@ impl BackupService {
 
                 note_count += 1;
             } else if name.starts_with("assets/") {
-                seen_asset_entries.insert(name.clone(), content);
+                seen_asset_meta.insert(
+                    name.clone(),
+                    (
+                        content.len(),
+                        actual_hash.clone(),
+                        AttachmentService::validate_magic_bytes(&content)
+                            .map(|(m, _)| m.to_string()),
+                    ),
+                );
             }
         }
 
@@ -669,34 +804,27 @@ impl BackupService {
 
         // Cross-validation: 1-to-1 match between referenced assets and actual assets
         for (ref_path, (exp_size, exp_sha, exp_mime)) in &referenced_assets {
-            let asset_content = seen_asset_entries
+            let (actual_size, actual_sha, actual_mime) = seen_asset_meta
                 .get(ref_path)
                 .ok_or_else(|| format!("便签引用的附件在备份包 assets/ 中缺失: {}", ref_path))?;
 
-            if asset_content.len() as i64 != *exp_size {
+            if (*actual_size as i64) != *exp_size {
                 return Err(format!(
                     "附件 {} 大小与便签记录不符 (实际: {}, 记录: {})",
-                    ref_path,
-                    asset_content.len(),
-                    exp_size
+                    ref_path, actual_size, exp_size
                 ));
             }
 
-            let mut h = Sha256::new();
-            h.update(asset_content);
-            let actual_sha = format!("{:x}", h.finalize());
             if !actual_sha.eq_ignore_ascii_case(exp_sha) {
                 return Err(format!("附件 {} 哈希值与便签记录不匹配", ref_path));
             }
 
-            let magic_mime =
-                AttachmentService::validate_magic_bytes(asset_content).map(|(m, _)| m.to_string());
-            if magic_mime.as_deref() != Some(exp_mime.as_str()) {
+            if actual_mime.as_deref() != Some(exp_mime.as_str()) {
                 return Err(format!("附件 {} 类型与魔数校验不匹配", ref_path));
             }
         }
 
-        for asset_path in seen_asset_entries.keys() {
+        for asset_path in seen_asset_meta.keys() {
             if !referenced_assets.contains_key(asset_path) {
                 return Err(format!("备份包包含未被任何便签引用的附件: {}", asset_path));
             }
@@ -725,13 +853,13 @@ impl BackupService {
             File::open(backup_zip_path).map_err(|e| format!("无法打开备份文件: {}", e))?;
         let metadata = zip_file.metadata().map_err(|e| e.to_string())?;
         if metadata.len() > MAX_ARCHIVE_FILE_SIZE {
-            return Err("备份文件大小超过 500MB 上限".to_string());
+            return Err(format!("备份文件大小超过 {}GB 上限", MAX_ARCHIVE_FILE_SIZE / (1024 * 1024 * 1024)));
         }
 
         let mut archive =
             ZipArchive::new(zip_file).map_err(|e| format!("无效的 ZIP 压缩包: {}", e))?;
         if archive.len() > MAX_ENTRY_COUNT {
-            return Err("备份包内文件数超过 20,000 上限".to_string());
+            return Err(format!("备份包内文件数超过 {} 上限", MAX_ENTRY_COUNT));
         }
 
         // 1. First pass: extract manifest
@@ -744,7 +872,7 @@ impl BackupService {
 
             if name == "manifest.json" {
                 if file.size() > MAX_SINGLE_ENTRY_SIZE as u64 {
-                    return Err("manifest.json 大小超过 25MB 上限".to_string());
+                    return Err(format!("manifest.json 大小超过 {}MB 上限", MAX_SINGLE_ENTRY_SIZE / (1024 * 1024)));
                 }
                 let mut content = Vec::new();
                 let mut buf = [0u8; 65536];
@@ -756,7 +884,7 @@ impl BackupService {
                     }
                     total_read += n;
                     if total_read > MAX_SINGLE_ENTRY_SIZE {
-                        return Err("manifest.json 解压大小超过 25MB 上限".to_string());
+                        return Err(format!("manifest.json 解压大小超过 {}MB 上限", MAX_SINGLE_ENTRY_SIZE / (1024 * 1024)));
                     }
                     content.extend_from_slice(&buf[..n]);
                 }
@@ -804,7 +932,13 @@ impl BackupService {
         let mut referenced_assets: HashMap<String, (i64, String, String)> = HashMap::new();
         let mut seen_asset_files = HashSet::new();
 
-        let mut verified_notes: Vec<BackupNoteData> = Vec::new();
+        // 校验通过的便签以 NDJSON 落盘到临时目录，避免全部 BackupNoteData 在事务期常驻内存
+        let notes_ndjson_path = temp_dir.path().join("notes.ndjson");
+        let mut notes_writer = BufWriter::new(
+            File::create(&notes_ndjson_path)
+                .map_err(|e| format!("创建恢复便签暂存文件失败: {}", e))?,
+        );
+        let mut verified_note_count: usize = 0;
         let mut total_decompressed: u64 = 0;
 
         for i in 0..archive.len() {
@@ -843,10 +977,10 @@ impl BackupService {
                 total_decompressed += n as u64;
 
                 if entry_read > MAX_SINGLE_ENTRY_SIZE {
-                    return Err(format!("条目 {} 解压大小超过 25MB 上限", name));
+                    return Err(format!("条目 {} 解压大小超过 {}MB 上限", name, MAX_SINGLE_ENTRY_SIZE / (1024 * 1024)));
                 }
                 if total_decompressed > MAX_TOTAL_DECOMPRESSED_SIZE {
-                    return Err("解压总量超过 500MB 上限 (防 Zip 炸弹)".to_string());
+                    return Err(format!("解压总量超过 {}GB 上限 (防 Zip 炸弹)", MAX_TOTAL_DECOMPRESSED_SIZE / (1024 * 1024 * 1024)));
                 }
 
                 content.extend_from_slice(&buf[..n]);
@@ -909,7 +1043,15 @@ impl BackupService {
                     }
                 }
 
-                verified_notes.push(note_data);
+                let line = serde_json::to_vec(&note_data)
+                    .map_err(|e| format!("写入恢复便签暂存文件失败: {}", e))?;
+                notes_writer
+                    .write_all(&line)
+                    .map_err(|e| format!("写入恢复便签暂存文件失败: {}", e))?;
+                notes_writer
+                    .write_all(b"\n")
+                    .map_err(|e| format!("写入恢复便签暂存文件失败: {}", e))?;
+                verified_note_count += 1;
             } else if name.starts_with("assets/") {
                 let filename = name.trim_start_matches("assets/");
                 if !Self::validate_attachment_relative_path(filename) {
@@ -920,6 +1062,11 @@ impl BackupService {
                 seen_asset_files.insert(name);
             }
         }
+
+        notes_writer
+            .flush()
+            .map_err(|e| format!("写入恢复便签暂存文件失败: {}", e))?;
+        drop(notes_writer);
 
         // Check for missing manifest files
         for manifest_path in manifest_map.keys() {
@@ -1012,7 +1159,7 @@ impl BackupService {
 
         let mut restored_tags_count = 0;
         let mut restored_attach_count = 0;
-        let restored_notes_count = verified_notes.len();
+        let restored_notes_count = verified_note_count;
 
         let tx_result: Result<(), String> = (|| {
             let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1045,7 +1192,13 @@ impl BackupService {
                 }
             }
 
-            for note in &verified_notes {
+            let notes_file = File::open(&notes_ndjson_path)
+                .map_err(|e| format!("读取恢复便签暂存文件失败: {}", e))?;
+            let notes_reader = BufReader::new(notes_file);
+            for line in notes_reader.lines() {
+                let line = line.map_err(|e| format!("读取恢复便签暂存文件失败: {}", e))?;
+                let note: BackupNoteData = serde_json::from_str(&line)
+                    .map_err(|e| format!("解析恢复便签暂存数据失败: {}", e))?;
                 tx.execute(
                     "INSERT INTO notes (
                         id, title, content_json, plain_text,

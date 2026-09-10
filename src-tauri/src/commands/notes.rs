@@ -1,7 +1,7 @@
 use crate::db::models::{BatchResult, CreateNoteInput, Note, NoteScope, UpdateNoteInput};
 use crate::utils::paths::validate_uuid;
 use crate::AppState;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 fn check_write_permission(state: &AppState) -> Result<(), String> {
     if let Some(err) = &state.read_only_recovery_error {
@@ -161,7 +161,8 @@ pub fn notes_restore(state: State<AppState>, id: String) -> Result<Note, String>
 }
 
 #[tauri::command]
-pub fn notes_trash_many(state: State<AppState>, ids: Vec<String>) -> Result<BatchResult, String> {
+pub async fn notes_trash_many(app: AppHandle, ids: Vec<String>) -> Result<BatchResult, String> {
+    let state = app.state::<AppState>();
     check_write_permission(&state)?;
     if ids.len() > 1000 {
         return Err("批量操作数量超过 1000 上限".to_string());
@@ -171,14 +172,19 @@ pub fn notes_trash_many(state: State<AppState>, ids: Vec<String>) -> Result<Batc
             return Err(format!("无效的 UUID 格式: {}", id));
         }
     }
-    state.notes_service.trash_many(&ids)
+    let svc = state.notes_service.clone();
+    drop(state);
+    tauri::async_runtime::spawn_blocking(move || svc.trash_many(&ids))
+        .await
+        .map_err(|e| format!("批量移入回收站任务执行失败: {}", e))?
 }
 
 #[tauri::command]
-pub fn notes_delete_permanently_many(
-    state: State<AppState>,
+pub async fn notes_delete_permanently_many(
+    app: AppHandle,
     ids: Vec<String>,
 ) -> Result<BatchResult, String> {
+    let state = app.state::<AppState>();
     check_write_permission(&state)?;
     if ids.len() > 1000 {
         return Err("批量操作数量超过 1000 上限".to_string());
@@ -188,11 +194,20 @@ pub fn notes_delete_permanently_many(
             return Err(format!("无效的 UUID 格式: {}", id));
         }
     }
-    state.notes_service.delete_permanently_many(&ids)
+    let svc = state.notes_service.clone();
+    drop(state);
+    tauri::async_runtime::spawn_blocking(move || svc.delete_permanently_many(&ids))
+        .await
+        .map_err(|e| format!("批量彻底删除任务执行失败: {}", e))?
 }
 
 #[tauri::command]
-pub fn notes_empty_trash(state: State<AppState>) -> Result<BatchResult, String> {
+pub async fn notes_empty_trash(app: AppHandle) -> Result<BatchResult, String> {
+    let state = app.state::<AppState>();
     check_write_permission(&state)?;
-    state.notes_service.empty_trash()
+    let svc = state.notes_service.clone();
+    drop(state);
+    tauri::async_runtime::spawn_blocking(move || svc.empty_trash())
+        .await
+        .map_err(|e| format!("清空回收站任务执行失败: {}", e))?
 }

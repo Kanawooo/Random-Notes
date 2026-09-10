@@ -33,11 +33,6 @@ impl NotesService {
         *lock = None;
     }
 
-    pub fn get_tracked_empty_draft_id(&self) -> Option<String> {
-        let lock = self.tracked_empty_draft_id.lock().unwrap_or_else(|e| e.into_inner());
-        lock.clone()
-    }
-
     fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
         Ok(Note {
             id: row.get(0)?,
@@ -204,8 +199,9 @@ impl NotesService {
 
         if let Some(tag_ids) = &input.tag_ids {
             for tag_id in tag_ids {
+                // SELECT 形式：陈旧 tag_id（标签已删）静默跳过，防英文外键错误回滚本次写入
                 tx.execute(
-                    "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO note_tags (note_id, tag_id) SELECT ?, id FROM tags WHERE id = ?",
                     params![id, tag_id],
                 )
                 .map_err(|e| e.to_string())?;
@@ -282,8 +278,9 @@ impl NotesService {
             tx.execute("DELETE FROM note_tags WHERE note_id = ?", params![input.id])
                 .map_err(|e| e.to_string())?;
             for tag_id in tag_ids {
+                // SELECT 形式：陈旧 tag_id（标签已删）静默跳过，防英文外键错误回滚本次写入
                 tx.execute(
-                    "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO note_tags (note_id, tag_id) SELECT ?, id FROM tags WHERE id = ?",
                     params![input.id, tag_id],
                 )
                 .map_err(|e| e.to_string())?;
@@ -345,6 +342,85 @@ impl NotesService {
 
         Self::attach_tags(&conn, &mut notes)?;
         Ok(notes)
+    }
+
+    /// 导出快照用：只取 id（与 list 相同的筛选与排序），导出期间并发编辑不会改变已取快照
+    pub fn list_ids(&self, scope: NoteScope) -> Result<Vec<String>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "Database lock failed".to_string())?;
+        let clause = Self::scope_clause(scope);
+        let sql = format!(
+            "SELECT n.id FROM notes n
+             WHERE {}
+             ORDER BY n.is_pinned DESC, n.updated_at DESC",
+            clause
+        );
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+
+        let mut ids = Vec::new();
+        for r in rows {
+            ids.push(r.map_err(|e| e.to_string())?);
+        }
+
+        Ok(ids)
+    }
+
+    /// 导出快照用：按 id 分批取回完整便签，SELECT 列、map_row、attach_tags 与 list 保持一致
+    pub fn list_by_ids(&self, ids: &[String]) -> Result<Vec<Note>, String> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "Database lock failed".to_string())?;
+        let placeholders = vec!["?"; ids.len()].join(", ");
+        let sql = format!(
+            "SELECT n.id, n.title, n.content_json, n.plain_text, n.title_manually_edited,
+                    n.is_pinned, n.archived_at, n.deleted_at, n.revision, n.created_at, n.updated_at
+             FROM notes n
+             WHERE n.id IN ({})",
+            placeholders
+        );
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(ids.iter()), Self::map_row)
+            .map_err(|e| e.to_string())?;
+
+        let mut notes = Vec::new();
+        for r in rows {
+            notes.push(r.map_err(|e| e.to_string())?);
+        }
+
+        Self::attach_tags(&conn, &mut notes)?;
+        Ok(notes)
+    }
+
+    /// 导出预扫描用：单条聚合 SQL 返回（便签总数, 正文体量下界估计）。
+    /// SQLite 的 length() 对 TEXT 返回字符数而非字节数，且未计 JSON 结构与 HTML 渲染开销；
+    /// 该值仅作预扫描下界估计，打包完成后另有按 manifest 的精确复核兜底。
+    /// SUM 在空表上为 NULL，用 COALESCE 归零
+    pub fn count_and_size(&self) -> Result<(usize, u64), String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "Database lock failed".to_string())?;
+        let (count, total): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(length(content_json) + length(plain_text)), 0) FROM notes",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok((count as usize, total as u64))
     }
 
     pub fn search(&self, query: &str, scope: NoteScope, limit: usize) -> Result<Vec<Note>, String> {

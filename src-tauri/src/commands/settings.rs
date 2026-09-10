@@ -28,14 +28,6 @@ pub fn settings_get_all(state: State<AppState>) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
-pub fn settings_get(state: State<AppState>, key: String) -> Result<Option<String>, String> {
-    if !ALLOWED_KEYS.contains(&key.as_str()) {
-        return Err(format!("不支持的设置项: {}", key));
-    }
-    state.settings_service.get_raw(&key)
-}
-
-#[tauri::command]
 pub fn settings_update(
     app: AppHandle,
     state: State<AppState>,
@@ -45,6 +37,13 @@ pub fn settings_update(
     check_write_permission(&state)?;
     if !ALLOWED_KEYS.contains(&key.as_str()) {
         return Err(format!("不支持的设置项: {}", key));
+    }
+    // 全局快捷键必须走录制注册流程（设置页 registerHotkey）：通用写入会绕过
+    // 全局注册/回滚，造成“库里是新键、运行中仍是旧键”的不一致
+    if key == "hotkey" {
+        return Err(
+            "全局呼出快捷键必须通过录制流程保存（registerHotkey），不支持直接修改".to_string(),
+        );
     }
 
     if key == "launchAtLogin" {

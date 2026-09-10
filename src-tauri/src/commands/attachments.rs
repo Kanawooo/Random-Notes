@@ -2,7 +2,7 @@ use base64::Engine;
 use crate::db::models::Attachment;
 use crate::utils::paths::validate_uuid;
 use crate::AppState;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 fn check_write_permission(state: &AppState) -> Result<(), String> {
     if let Some(err) = &state.read_only_recovery_error {
@@ -51,22 +51,4 @@ pub async fn attachments_add_from_bytes(
     tauri::async_runtime::spawn_blocking(move || svc.save_image_bytes(&note_id, &bytes))
         .await
         .map_err(|e| format!("附件处理任务执行失败: {}", e))?
-}
-
-#[tauri::command]
-pub fn attachments_remove(state: State<AppState>, id: String) -> Result<(), String> {
-    check_write_permission(&state)?;
-    if !validate_uuid(&id) {
-        return Err("无效的附件 UUID".to_string());
-    }
-    state.attachment_service.delete(&id)
-}
-
-#[tauri::command]
-pub fn attachments_get_url(id: String) -> Result<String, String> {
-    if !validate_uuid(&id) {
-        return Err("无效的附件 UUID".to_string());
-    }
-    // Windows WebView2 只拦截 http://<scheme>.localhost/<path> 形式；返回可直接渲染的显示 URL
-    Ok(format!("http://suijian-attachment.localhost/{}", id))
 }

@@ -203,6 +203,15 @@ impl SettingsService {
         result_parts.push(&key);
         let result = result_parts.join("+");
 
+        // 非全局的动作快捷键不接受裸字符键：注册后打字会反复命中全局处理器吞掉输入
+        let has_modifier = has_ctrl || has_alt || has_shift || has_super;
+        if !is_global && !has_modifier && (key.len() == 1 || key == "Space") {
+            return Err(format!(
+                "动作快捷键不能用裸的字符键 \"{}\"（会占用该字符的输入）；请搭配 Ctrl/Alt/Shift，或改用 F1–F24 等功能键",
+                key
+            ));
+        }
+
         if is_global
             && result
                 .parse::<tauri_plugin_global_shortcut::Shortcut>()
@@ -218,23 +227,18 @@ impl SettingsService {
         Self::validate_and_normalize_shortcut(input, false)
     }
 
-    pub fn update_action_shortcuts(
-        &self,
+    /// 四元快捷键唯一性校验（update 与 update_action_shortcuts 共用）；错误文案必须与历史行为一致
+    fn ensure_shortcuts_unique(
+        hotkey: &str,
         new_note: &str,
         back_to_search: &str,
         dismiss: &str,
-    ) -> Result<AppSettings, String> {
-        let current = self.get_all();
-
-        let n_norm = Self::validate_and_normalize_shortcut(new_note, false)?;
-        let b_norm = Self::validate_and_normalize_shortcut(back_to_search, false)?;
-        let d_norm = Self::validate_and_normalize_shortcut(dismiss, false)?;
-
+    ) -> Result<(), String> {
         let shortcuts = [
-            ("全局呼出", current.hotkey.as_str()),
-            ("新建便签", n_norm.as_str()),
-            ("返回搜索", b_norm.as_str()),
-            ("取消/隐藏", d_norm.as_str()),
+            ("全局呼出", hotkey),
+            ("新建便签", new_note),
+            ("返回搜索", back_to_search),
+            ("取消/隐藏", dismiss),
         ];
 
         for i in 0..shortcuts.len() {
@@ -247,6 +251,22 @@ impl SettingsService {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn update_action_shortcuts(
+        &self,
+        new_note: &str,
+        back_to_search: &str,
+        dismiss: &str,
+    ) -> Result<AppSettings, String> {
+        let current = self.get_all();
+
+        let n_norm = Self::validate_and_normalize_shortcut(new_note, false)?;
+        let b_norm = Self::validate_and_normalize_shortcut(back_to_search, false)?;
+        let d_norm = Self::validate_and_normalize_shortcut(dismiss, false)?;
+
+        Self::ensure_shortcuts_unique(&current.hotkey, &n_norm, &b_norm, &d_norm)?;
 
         let mut conn = self
             .conn
@@ -326,23 +346,12 @@ impl SettingsService {
                 _ => {}
             }
 
-            let shortcuts = [
-                ("全局呼出", &test_settings.hotkey),
-                ("新建便签", &test_settings.shortcut_new_note),
-                ("返回搜索", &test_settings.shortcut_back_to_search),
-                ("取消/隐藏", &test_settings.shortcut_dismiss),
-            ];
-
-            for i in 0..shortcuts.len() {
-                for j in (i + 1)..shortcuts.len() {
-                    if shortcuts[i].1.eq_ignore_ascii_case(shortcuts[j].1) {
-                        return Err(format!(
-                            "快捷键冲突：\"{}\" 与 \"{}\" 均为 \"{}\"",
-                            shortcuts[i].0, shortcuts[j].0, shortcuts[i].1
-                        ));
-                    }
-                }
-            }
+            Self::ensure_shortcuts_unique(
+                &test_settings.hotkey,
+                &test_settings.shortcut_new_note,
+                &test_settings.shortcut_back_to_search,
+                &test_settings.shortcut_dismiss,
+            )?;
         }
 
         let json_str = serde_json::to_string(&val_to_store).map_err(|e| e.to_string())?;

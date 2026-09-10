@@ -172,8 +172,9 @@ impl TagsService {
         .map_err(|e| e.to_string())?;
 
         for tag_id in &input.tag_ids {
+            // SELECT 形式：陈旧 tag_id（标签已删）静默跳过，防英文外键错误回滚本次赋标签
             tx.execute(
-                "INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)",
+                "INSERT OR IGNORE INTO note_tags (note_id, tag_id) SELECT ?, id FROM tags WHERE id = ?",
                 params![input.note_id, tag_id],
             )
             .map_err(|e| e.to_string())?;

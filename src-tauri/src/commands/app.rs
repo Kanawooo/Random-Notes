@@ -8,7 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub fn app_get_info() -> Result<AppInfo, String> {
     Ok(AppInfo {
         name: "随笺".to_string(),
-        version: "0.1.0".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
         user_data_path: get_user_data_dir().to_string_lossy().to_string(),
         db_path: get_db_path().to_string_lossy().to_string(),
     })
@@ -29,12 +29,6 @@ pub fn app_open_user_data_folder() -> Result<(), String> {
     // that_detached + shellexecute-on-windows feature 才真正走 ShellExecuteExW；
     // open::that 无论 feature 与否都固定 spawn powershell.exe（冷启 ~1s）
     open::that_detached(get_user_data_dir()).map_err(|e| format!("无法打开用户数据文件夹: {}", e))
-}
-
-#[tauri::command]
-pub fn app_quit(app: AppHandle) -> Result<(), String> {
-    let _ = app.emit("event:request-quit", ());
-    Ok(())
 }
 
 #[tauri::command]

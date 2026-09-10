@@ -1,7 +1,7 @@
 use crate::db::models::{AssignTagsInput, CreateTagInput, RenameTagInput, Tag};
 use crate::utils::paths::validate_uuid;
 use crate::AppState;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 fn check_write_permission(state: &AppState) -> Result<(), String> {
     if let Some(err) = &state.read_only_recovery_error {
@@ -50,12 +50,17 @@ pub fn tags_rename(state: State<AppState>, input: RenameTagInput) -> Result<Tag,
 }
 
 #[tauri::command]
-pub fn tags_delete(state: State<AppState>, id: String) -> Result<(), String> {
+pub async fn tags_delete(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
     check_write_permission(&state)?;
     if !validate_uuid(&id) {
         return Err("无效的标签 UUID".to_string());
     }
-    state.tags_service.delete(&id)
+    let svc = state.tags_service.clone();
+    drop(state);
+    tauri::async_runtime::spawn_blocking(move || svc.delete(&id))
+        .await
+        .map_err(|e| format!("删除标签任务执行失败: {}", e))?
 }
 
 #[tauri::command]

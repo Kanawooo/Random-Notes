@@ -147,61 +147,22 @@ impl AttachmentService {
         self.save_image_bytes(note_id, &png_bytes)
     }
 
-    pub fn delete(&self, id: &str) -> Result<(), String> {
-        let mut conn = self
-            .conn
-            .lock()
-            .map_err(|_| "Database lock failed".to_string())?;
-
-        let rel_path: String = conn
-            .query_row(
-                "SELECT relative_path FROM attachments WHERE id = ?",
-                params![id],
-                |r| r.get(0),
-            )
-            .map_err(|_| "附件不存在或已被删除".to_string())?;
-
-        let file_path = self.attachments_dir.join(&rel_path);
-        let temp_delete_path =
-            self.attachments_dir
-                .join(format!("{}.del-{}.tmp", rel_path, uuid::Uuid::new_v4()));
-
-        let file_existed = file_path.exists();
-        if file_existed {
-            fs::rename(&file_path, &temp_delete_path)
-                .map_err(|e| format!("准备删除附件物理文件失败: {}", e))?;
-        }
-
-        // DB transaction for deletion
-        let db_result = (|| -> Result<(), rusqlite::Error> {
-            let tx = conn.transaction()?;
-            let rows = tx.execute("DELETE FROM attachments WHERE id = ?", params![id])?;
-            if rows == 0 {
-                return Err(rusqlite::Error::QueryReturnedNoRows);
-            }
-            tx.commit()?;
-            Ok(())
-        })();
-
-        if let Err(e) = db_result {
-            // Roll back file rename if it existed
-            if file_existed {
-                let _ = fs::rename(&temp_delete_path, &file_path);
-            }
-            return Err(format!("删除附件数据库记录失败: {}", e));
-        }
-
-        // Now remove the temporary deleted file
-        if file_existed {
-            if let Err(e) = fs::remove_file(&temp_delete_path) {
-                return Err(format!("附件记录已删除，但清理临时物理文件失败: {}", e));
-            }
-        }
-
-        Ok(())
+    fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Attachment> {
+        Ok(Attachment {
+            id: row.get(0)?,
+            note_id: row.get(1)?,
+            relative_path: row.get(2)?,
+            mime_type: row.get(3)?,
+            byte_size: row.get(4)?,
+            width: row.get(5)?,
+            height: row.get(6)?,
+            sha256: row.get(7)?,
+            created_at: row.get(8)?,
+        })
     }
 
-    pub fn list_for_note(&self, note_id: &str) -> Result<Vec<Attachment>, String> {
+    /// 导出用：单条 SQL 取全量附件行，按 note_id、rowid 排序，保证每个便签组内顺序为 rowid 升序
+    pub fn list_all(&self) -> Result<Vec<Attachment>, String> {
         let conn = self
             .conn
             .lock()
@@ -209,24 +170,33 @@ impl AttachmentService {
         let mut stmt = conn
             .prepare(
                 "SELECT id, note_id, relative_path, mime_type, byte_size, width, height, sha256, created_at
-                 FROM attachments WHERE note_id = ?",
+                 FROM attachments ORDER BY note_id, rowid",
             )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map(params![note_id], |row| {
-                Ok(Attachment {
-                    id: row.get(0)?,
-                    note_id: row.get(1)?,
-                    relative_path: row.get(2)?,
-                    mime_type: row.get(3)?,
-                    byte_size: row.get(4)?,
-                    width: row.get(5)?,
-                    height: row.get(6)?,
-                    sha256: row.get(7)?,
-                    created_at: row.get(8)?,
-                })
-            })
+            .query_map([], Self::map_row)
+            .map_err(|e| e.to_string())?;
+
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(list)
+    }
+
+    /// 导出预扫描用：单条 SQL 取全量附件摘要（relative_path, byte_size），不做 N+1
+    pub fn list_all_summary(&self) -> Result<Vec<(String, i64)>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "Database lock failed".to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT relative_path, byte_size FROM attachments")
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|e| e.to_string())?;
 
         let mut list = Vec::new();
@@ -286,6 +256,91 @@ impl AttachmentService {
         }
 
         Ok(removed)
+    }
+
+    /// 启动自愈：清理恢复崩溃残留的 `.restore-tmp-*` 暂存目录，并在附件目录缺失/不完整时改回旧副本。
+    /// 以数据库引用为事实源判断 `attachments.old-*` 是「过期副本（可删）」还是「数据库仍依赖的救援副本（必须改回）」
+    pub fn reconcile_restore_artifacts(&self) -> Result<usize, String> {
+        let user_dir = match self.attachments_dir.parent() {
+            Some(dir) => dir,
+            None => return Ok(0),
+        };
+
+        let mut cleaned = 0usize;
+        let mut old_dirs: Vec<PathBuf> = Vec::new();
+
+        if user_dir.exists() {
+            let entries =
+                fs::read_dir(user_dir).map_err(|e| format!("读取用户数据目录失败: {}", e))?;
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("遍历用户数据目录条目失败: {}", e))?;
+                let file_type = entry
+                    .file_type()
+                    .map_err(|e| format!("获取文件类型失败: {}", e))?;
+                if !file_type.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(".restore-tmp-") {
+                    // 纯暂存目录：任何崩溃窗口下删除都无数据风险
+                    fs::remove_dir_all(entry.path())
+                        .map_err(|e| format!("清理恢复暂存目录失败: {}", e))?;
+                    cleaned += 1;
+                } else if name.starts_with("attachments.old-") {
+                    old_dirs.push(entry.path());
+                }
+            }
+        }
+
+        if old_dirs.is_empty() {
+            return Ok(cleaned);
+        }
+
+        let db_refs: std::collections::HashSet<String> = {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|_| "Database lock failed".to_string())?;
+            let mut stmt = conn
+                .prepare("SELECT relative_path FROM attachments")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            rows.filter_map(|r| r.ok()).collect()
+        };
+
+        let refs_available_in =
+            |dir: &Path| -> bool { db_refs.iter().all(|p| dir.join(p).exists()) };
+
+        if refs_available_in(&self.attachments_dir) {
+            // 数据库引用的附件都已在当前目录就位：old 目录只是崩溃残留的过期副本，可安全删除
+            for dir in &old_dirs {
+                fs::remove_dir_all(dir).map_err(|e| format!("清理过期附件旧目录失败: {}", e))?;
+                cleaned += 1;
+            }
+            return Ok(cleaned);
+        }
+
+        // 当前目录不满足全部引用：崩溃可能停在「旧目录已改名、新目录未装入」窗口。
+        // 以数据库引用为事实源，找到数据库仍依赖的救援副本并改回原位
+        if let Some(index) = old_dirs.iter().position(|dir| refs_available_in(dir)) {
+            let rescue_dir = old_dirs.remove(index);
+            if self.attachments_dir.exists() {
+                fs::remove_dir_all(&self.attachments_dir)
+                    .map_err(|e| format!("清理候选附件目录失败: {}", e))?;
+            }
+            fs::rename(&rescue_dir, &self.attachments_dir)
+                .map_err(|e| format!("恢复附件目录失败: {}", e))?;
+            for dir in &old_dirs {
+                fs::remove_dir_all(dir)
+                    .map_err(|e| format!("清理多余附件旧目录失败: {}", e))?;
+                cleaned += 1;
+            }
+        }
+        // 找不到与数据库引用完全匹配的旧目录：数据不足以判定，保持原状交由人工检查
+
+        Ok(cleaned)
     }
 
     pub fn resolve_attachment_file(&self, id_or_uuid: &str) -> Result<PathBuf, String> {
