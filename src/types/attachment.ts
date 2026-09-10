@@ -9,9 +9,3 @@ export interface Attachment {
   sha256: string
   created_at: string
 }
-
-export interface CreateAttachmentInput {
-  noteId: string
-  dataBase64: string
-  mimeType: string
-}

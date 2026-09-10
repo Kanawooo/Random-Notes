@@ -29,15 +29,6 @@ export const BatchActionBar: React.FC<BatchActionBarProps> = ({
     return null
   }
 
-  // 键盘守卫：search 视图全局 Enter/Space 处理器会劫持按钮激活（仅排除 INPUT/TEXTAREA）；
-  // React 合成事件先于 window 监听器，preventDefault 后 App.tsx 的 defaultPrevented 早退生效
-  const handleSelectAllKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault()
-      onToggleSelectAll()
-    }
-  }
-
   return (
     <div className="batch-action-bar">
       <div className="batch-left">
@@ -48,7 +39,6 @@ export const BatchActionBar: React.FC<BatchActionBarProps> = ({
             type="button"
             className="batch-text-btn"
             onClick={onToggleSelectAll}
-            onKeyDown={handleSelectAllKeyDown}
           >
             全选当前 ({totalCount})
           </button>

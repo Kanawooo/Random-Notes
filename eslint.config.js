@@ -11,7 +11,8 @@ export default [
       'node_modules/**',
       'src-tauri/target/**',
       'release-artifacts/**',
-      'coverage/**'
+      'coverage/**',
+      '.pi/**'
     ]
   },
   js.configs.recommended,

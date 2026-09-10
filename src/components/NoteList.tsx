@@ -17,8 +17,10 @@ interface NoteListProps {
 function formatDate(isoStr: string): string {
   try {
     const d = new Date(isoStr)
+    const t = d.getTime()
+    if (Number.isNaN(t)) return ''
     const now = new Date()
-    const diffMs = now.getTime() - d.getTime()
+    const diffMs = now.getTime() - t
     const diffMins = Math.floor(diffMs / 60000)
     const diffHours = Math.floor(diffMins / 60)
     const diffDays = Math.floor(diffHours / 24)
@@ -103,7 +105,7 @@ export const NoteList: React.FC<NoteListProps> = ({
 
           <div className="note-item-meta">
             {note.is_pinned && (
-              <span className="pin-icon" title="置顶" aria-label="置顶">
+              <span className="pin-icon" role="img" title="置顶" aria-label="置顶">
                 <UiIcon name="pin" size={13} />
               </span>
             )}

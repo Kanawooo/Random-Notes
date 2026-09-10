@@ -51,6 +51,7 @@ export const App: React.FC = () => {
   const [recoveryStatus, setRecoveryStatus] = useState<RecoveryStatus | null>(null)
   const [isInitialized, setIsInitialized] = useState(false)
   const [errorBanner, setErrorBanner] = useState<string | null>(null)
+  const [appVersion, setAppVersion] = useState('')
 
   const registeredFlushRef = useRef<(() => Promise<boolean>) | null>(null)
 
@@ -207,6 +208,16 @@ export const App: React.FC = () => {
         setRecoveryStatus(status)
         setIsInitialized(true)
 
+        // 版本号仅用于底栏展示，读取失败不阻塞初始化
+        try {
+          const info = await suijian.app.getInfo()
+          if (isMounted) {
+            setAppVersion(info.version)
+          }
+        } catch (err) {
+          console.error('Failed to get app info:', err)
+        }
+
         if (!status.isRecovery) {
           const [s, t] = await Promise.all([
             suijian.settings.getAll(),
@@ -229,7 +240,7 @@ export const App: React.FC = () => {
         }
 
         // Register all Tauri IPC events and await registration promises
-        const [unFocus, unReqNew, unCreated, unHide, unQuit] = await Promise.all([
+        const [unFocus, unReqNew, unHide, unQuit] = await Promise.all([
           suijian.events.onFocusSearch(() => {
             // 保持隐藏前的视图；仅在搜索页时聚焦搜索框并刷新列表
             if (viewRef.current === 'search') {
@@ -239,10 +250,6 @@ export const App: React.FC = () => {
           }),
           suijian.events.onRequestNewNote(() => {
             handleCreateNoteRef.current(true)
-          }),
-          suijian.events.onNoteCreated((note) => {
-            setCurrentNote(note)
-            setView('editor')
           }),
           suijian.events.onRequestHide(async () => {
             try {
@@ -271,13 +278,12 @@ export const App: React.FC = () => {
         if (!isMounted) {
           unFocus()
           unReqNew()
-          unCreated()
           unHide()
           unQuit()
           return
         }
 
-        unlistenFns = [unFocus, unReqNew, unCreated, unHide, unQuit]
+        unlistenFns = [unFocus, unReqNew, unHide, unQuit]
 
         // Notify backend renderer ready only after initialization and listeners are all active
         try {
@@ -301,18 +307,17 @@ export const App: React.FC = () => {
       for (const fn of unlistenFns) {
         try {
           fn()
-        } catch {}
+        } catch { /* unlisten 清理失败可忽略 */ }
       }
     }
   }, [])
 
   // scope/标签/初始化/恢复模式变化即时刷新；searchQuery 由下方防抖 effect 处理。
-  // 守卫与 deps 必须完整：恢复模式不得发 notes.list（app-workflow.test.tsx:317 护栏）
+  // 守卫与 deps 必须完整：恢复模式不得发 notes.list（app-workflow.test.tsx:296 护栏）
   useEffect(() => {
     if (isInitialized && !recoveryStatus?.isRecovery) {
       refreshNotesRef.current()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isInitialized, recoveryStatus?.isRecovery, scope, selectedTagId])
 
   // 搜索防抖：每按键不再直发 IPC+SQLite 查询
@@ -421,6 +426,8 @@ export const App: React.FC = () => {
       // 4. Arrow Up / Down / Enter / Space in Search view
       if (view === 'search' && !isTagModalOpen && !confirmState.isOpen) {
         const target = e.target as HTMLElement
+        // 按钮聚焦时 Enter/Space 是原生激活语义，交还浏览器默认行为；方向键仍执行列表导航
+        const onButton = target instanceof Element && target.closest('button') !== null
         const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
 
         if (e.key === 'ArrowDown') {
@@ -430,6 +437,9 @@ export const App: React.FC = () => {
           e.preventDefault()
           setFocusedIndex((prev) => (prev > 0 ? prev - 1 : 0))
         } else if (e.key === 'Enter') {
+          const isCheckbox = target instanceof HTMLInputElement && target.type === 'checkbox'
+          if (isCheckbox) return
+          if (onButton) return
           if (notes.length > 0 && focusedIndex >= 0 && focusedIndex < notes.length) {
             e.preventDefault()
             setCurrentNote(notes[focusedIndex])
@@ -439,6 +449,7 @@ export const App: React.FC = () => {
             handleCreateNote(false, searchQuery.trim())
           }
         } else if (e.key === ' ' && !isInput) {
+          if (onButton) return
           e.preventDefault()
           if (notes[focusedIndex]) {
             const id = notes[focusedIndex].id
@@ -756,7 +767,6 @@ export const App: React.FC = () => {
               registeredFlushRef.current = null
             }
           }}
-          backShortcutText={settings?.shortcutBackToSearch || 'Ctrl+E'}
           isAppReservedShortcut={isAppReservedShortcut}
         />
       )}
@@ -827,10 +837,8 @@ export const App: React.FC = () => {
           <span className="kbd-shortcut">{settings?.shortcutBackToSearch || 'Ctrl+E'}</span> 搜索 &nbsp;|&nbsp;{' '}
           <span className="kbd-shortcut">{settings?.hotkey || 'Ctrl+Space'}</span> 呼出/收起
         </span>
-        <span>随笺 v0.1.0</span>
+        <span>随笺 v{appVersion}</span>
       </div>
     </div>
   )
 }
-
-export default App

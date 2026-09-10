@@ -9,7 +9,6 @@ interface SearchBarProps {
   tags?: Tag[]
   selectedTagId?: string | null
   onSelectTag?: (tagId: string | null) => void
-  onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void
   totalCount: number
   newNoteShortcut?: string
   focusTrigger?: number
@@ -23,7 +22,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   tags = [],
   selectedTagId = null,
   onSelectTag,
-  onKeyDown,
   totalCount,
   newNoteShortcut = 'Ctrl+N',
   focusTrigger
@@ -46,7 +44,6 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           placeholder={`搜索便签内容或标签... (Enter 打开，${newNoteShortcut} 新建)`}
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
-          onKeyDown={onKeyDown}
           autoFocus
           aria-label="便签全局搜索框"
         />
@@ -54,12 +51,13 @@ export const SearchBar: React.FC<SearchBarProps> = ({
 
       {/* 范围与标签筛选 */}
       <div className="filter-bar">
-        <div className="scope-pills" role="tablist" aria-label="便签范围筛选">
+        <div className="scope-pills" role="group" aria-label="便签范围筛选">
           <button
             type="button"
             className={`pill ${scope === 'active' ? 'active' : ''}`}
             onClick={() => onScopeChange('active')}
             aria-label="常规便签"
+            aria-pressed={scope === 'active'}
           >
             便签 {scope === 'active' && totalCount > 0 ? `(${totalCount})` : ''}
           </button>
@@ -68,6 +66,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             className={`pill ${scope === 'archived' ? 'active' : ''}`}
             onClick={() => onScopeChange('archived')}
             aria-label="归档便签"
+            aria-pressed={scope === 'archived'}
           >
             归档 {scope === 'archived' && totalCount > 0 ? `(${totalCount})` : ''}
           </button>
@@ -76,17 +75,19 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             className={`pill ${scope === 'trash' ? 'active' : ''}`}
             onClick={() => onScopeChange('trash')}
             aria-label="回收站"
+            aria-pressed={scope === 'trash'}
           >
             回收站 {scope === 'trash' && totalCount > 0 ? `(${totalCount})` : ''}
           </button>
         </div>
 
         {tags && tags.length > 0 && onSelectTag && (
-          <div className="tag-pills" aria-label="标签筛选">
+          <div className="tag-pills" role="group" aria-label="标签筛选">
             <button
               type="button"
               className={`tag-pill ${selectedTagId === null ? 'active' : ''}`}
               onClick={() => onSelectTag(null)}
+              aria-pressed={selectedTagId === null}
             >
               全部
             </button>
@@ -96,6 +97,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                 type="button"
                 className={`tag-pill ${selectedTagId === t.id ? 'active' : ''}`}
                 onClick={() => onSelectTag(selectedTagId === t.id ? null : t.id)}
+                aria-pressed={selectedTagId === t.id}
               >
                 #{t.name}
               </button>

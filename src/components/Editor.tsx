@@ -217,7 +217,6 @@ interface EditorProps {
   onNoteUpdated: (note: Note) => void
   onOpenTagModal: () => void
   onRegisterFlush?: (flush: () => Promise<boolean>) => () => void
-  backShortcutText?: string
   /** 应用级保留快捷键判定（App 全局处理器同源）：命中时编辑器必须放行给 window，
    *  否则 tiptap Code 的 Mod-e 与 ProseMirror captureKeyDown 对 Escape 的无条件
    *  preventDefault 会被 App 的 defaultPrevented 早退当成有意让位，快捷键在正文内失效 */
@@ -662,7 +661,7 @@ export const Editor: React.FC<EditorProps> = ({
       )}
 
       {/* 便签标签管理栏 */}
-      <div className="editor-tags-bar" aria-label="便签标签管理">
+      <div className="editor-tags-bar" role="group" aria-label="便签标签管理">
         <div className="editor-tags-list">
           <span className="editor-tags-label">标签:</span>
           {note.tags && note.tags.length > 0 ? (
@@ -678,7 +677,7 @@ export const Editor: React.FC<EditorProps> = ({
                   className="tag-remove-btn"
                   onClick={() => handleRemoveTag(tag.id)}
                   aria-label={`移除标签 ${tag.name}`}
-                  data-tip={`移除标签 ${tag.name}`}
+                  data-tip="移除标签"
                 >
                   <UiIcon name="close" size={10} />
                 </button>
@@ -731,6 +730,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('heading', { level: 1 }) ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
               aria-label="一级标题"
+              aria-pressed={editor.isActive('heading', { level: 1 })}
               data-tip="一级标题"
             >
               H1
@@ -740,6 +740,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('heading', { level: 2 }) ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
               aria-label="二级标题"
+              aria-pressed={editor.isActive('heading', { level: 2 })}
               data-tip="二级标题"
             >
               H2
@@ -749,6 +750,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('heading', { level: 3 }) ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
               aria-label="三级标题"
+              aria-pressed={editor.isActive('heading', { level: 3 })}
               data-tip="三级标题"
             >
               H3
@@ -761,6 +763,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('bold') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleBold().run()}
               aria-label="加粗 (Ctrl+B)"
+              aria-pressed={editor.isActive('bold')}
               data-tip="加粗 (Ctrl+B)"
             >
               <b>B</b>
@@ -770,6 +773,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('italic') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleItalic().run()}
               aria-label="斜体 (Ctrl+I)"
+              aria-pressed={editor.isActive('italic')}
               data-tip="斜体 (Ctrl+I)"
             >
               <i>I</i>
@@ -782,6 +786,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('bulletList') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleBulletList().run()}
               aria-label="无序列表"
+              aria-pressed={editor.isActive('bulletList')}
               data-tip="无序列表"
             >
               <UiIcon name="list" size={15} />
@@ -791,6 +796,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('orderedList') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleOrderedList().run()}
               aria-label="有序列表"
+              aria-pressed={editor.isActive('orderedList')}
               data-tip="有序列表"
             >
               <UiIcon name="list-ordered" size={15} />
@@ -800,6 +806,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('taskList') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleTaskList().run()}
               aria-label="任务列表"
+              aria-pressed={editor.isActive('taskList')}
               data-tip="任务列表"
             >
               <UiIcon name="check-square" size={14} />
@@ -812,6 +819,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('blockquote') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleBlockquote().run()}
               aria-label="引用"
+              aria-pressed={editor.isActive('blockquote')}
               data-tip="引用"
             >
               <UiIcon name="quote" size={14} />
@@ -821,6 +829,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn ${editor.isActive('code') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleCode().run()}
               aria-label="行内代码"
+              aria-pressed={editor.isActive('code')}
               data-tip="行内代码"
             >
               <UiIcon name="code" size={14} />
@@ -830,6 +839,7 @@ export const Editor: React.FC<EditorProps> = ({
               className={`toolbar-btn toolbar-btn-text ${editor.isActive('codeBlock') ? 'is-active' : ''}`}
               onClick={() => editor.chain().focus().toggleCodeBlock().run()}
               aria-label="代码块"
+              aria-pressed={editor.isActive('codeBlock')}
               data-tip="代码块"
             >
               <UiIcon name="code-block" size={14} />

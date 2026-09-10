@@ -25,7 +25,13 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 
   return (
     <div className="modal-backdrop" onClick={onCancel}>
-      <div className="confirm-card" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="confirm-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="confirm-title">{title}</div>
         <div className="confirm-message">{message}</div>
         <div className="confirm-actions">

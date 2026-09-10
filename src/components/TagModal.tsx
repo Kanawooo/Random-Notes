@@ -69,7 +69,13 @@ export const TagModal: React.FC<TagModalProps> = ({
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label="标签管理"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-header">
           <h3>管理标签</h3>
           <button
@@ -93,7 +99,10 @@ export const TagModal: React.FC<TagModalProps> = ({
               value={newTagName}
               onChange={(e) => setNewTagName(e.target.value)}
               placeholder="新标签名称..."
+              maxLength={50}
+              aria-label="新标签名称"
               onKeyDown={(e) => e.key === 'Enter' && handleCreateTag()}
+              autoFocus
             />
             <div className="tag-color-picker">
               {PRESET_COLORS.map((c) => (
@@ -103,6 +112,8 @@ export const TagModal: React.FC<TagModalProps> = ({
                   className={`color-dot-btn ${newTagColor === c ? 'active' : ''}`}
                   style={{ backgroundColor: c }}
                   onClick={() => setNewTagColor(c)}
+                  aria-label={`颜色 ${c}`}
+                  aria-pressed={newTagColor === c}
                 />
               ))}
             </div>
@@ -122,6 +133,8 @@ export const TagModal: React.FC<TagModalProps> = ({
                     className="tag-edit-input"
                     value={editingName}
                     onChange={(e) => setEditingName(e.target.value)}
+                    maxLength={50}
+                    aria-label="编辑标签名称"
                     onKeyDown={(e) => e.key === 'Enter' && handleSaveRename(t.id)}
                     autoFocus
                   />
@@ -131,7 +144,7 @@ export const TagModal: React.FC<TagModalProps> = ({
 
                 <div className="tag-item-actions">
                   {editingId === t.id ? (
-                    <button className="btn-small" onClick={() => handleSaveRename(t.id)}>
+                    <button className="btn-small" onClick={() => handleSaveRename(t.id)} aria-label={`保存标签名 ${t.name}`}>
                       保存
                     </button>
                   ) : (
@@ -141,11 +154,12 @@ export const TagModal: React.FC<TagModalProps> = ({
                         setEditingId(t.id)
                         setEditingName(t.name)
                       }}
+                      aria-label={`重命名标签 ${t.name}`}
                     >
                       重命名
                     </button>
                   )}
-                  <button className="btn-small danger-text" onClick={() => handleDeleteTag(t.id)}>
+                  <button className="btn-small danger-text" onClick={() => handleDeleteTag(t.id)} aria-label={`删除标签 ${t.name}`}>
                     删除
                   </button>
                 </div>

@@ -19,6 +19,7 @@ export interface HotkeyStatus {
   registered: boolean
   currentHotkey: string
   requestedHotkey?: string
+  requestSucceeded?: boolean
   error?: string
   recommendedHotkey?: string
 }

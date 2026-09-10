@@ -13,7 +13,6 @@ import type {
   Attachment,
   AppSettings,
   HotkeyStatus,
-  WindowBounds,
   AppInfo,
   BackupExportResult,
   BackupRestoreResult
@@ -64,11 +63,7 @@ export const suijian = {
     addFromClipboard: (noteId: string): Promise<Attachment> =>
       invoke<Attachment>('attachments_add_from_clipboard', { noteId }),
     addFromBytes: (noteId: string, dataBase64: string): Promise<Attachment> =>
-      invoke<Attachment>('attachments_add_from_bytes', { noteId, data: dataBase64 }),
-    remove: (id: string): Promise<void> =>
-      invoke<void>('attachments_remove', { id }),
-    getUrl: (id: string): Promise<string> =>
-      invoke<string>('attachments_get_url', { id })
+      invoke<Attachment>('attachments_add_from_bytes', { noteId, data: dataBase64 })
   },
   backup: {
     export: (defaultFilename?: string): Promise<BackupExportResult> =>
@@ -81,8 +76,6 @@ export const suijian = {
   settings: {
     getAll: (): Promise<AppSettings> =>
       invoke<AppSettings>('settings_get_all'),
-    get: (key: string): Promise<string | null> =>
-      invoke<string | null>('settings_get', { key }),
     update: (key: string, value: unknown): Promise<AppSettings> =>
       invoke<AppSettings>('settings_update', { key, value }),
     getHotkeyStatus: (): Promise<HotkeyStatus> =>
@@ -101,20 +94,10 @@ export const suijian = {
       })
   },
   window: {
-    hide: (): Promise<void> =>
-      invoke<void>('window_hide'),
     confirmHide: (): Promise<void> =>
       invoke<void>('window_confirm_hide'),
-    show: (): Promise<void> =>
-      invoke<void>('window_show'),
-    setDialogOpen: (open: boolean): Promise<void> =>
-      invoke<void>('set_dialog_open', { open }),
     setUnsavedError: (hasError: boolean): Promise<void> =>
-      invoke<void>('window_set_unsaved_error', { hasError }),
-    getState: (): Promise<WindowBounds | null> =>
-      invoke<WindowBounds | null>('window_get_state'),
-    updateState: (bounds: WindowBounds): Promise<void> =>
-      invoke<void>('window_update_state', { bounds })
+      invoke<void>('window_set_unsaved_error', { hasError })
   },
   app: {
     getInfo: (): Promise<AppInfo> =>
@@ -123,8 +106,6 @@ export const suijian = {
       invoke<import('../types').RecoveryStatus>('app_get_recovery_status'),
     openUserDataFolder: (): Promise<void> =>
       invoke<void>('app_open_user_data_folder'),
-    quit: (): Promise<void> =>
-      invoke<void>('app_quit'),
     confirmQuit: (): Promise<void> =>
       invoke<void>('app_confirm_quit'),
     openExternal: (url: string): Promise<void> =>
@@ -133,8 +114,6 @@ export const suijian = {
       invoke<void>('renderer_ready')
   },
   events: {
-    onNoteCreated: (cb: (note: Note) => void): Promise<UnlistenFn> =>
-      listen<Note>('event:note-created', (e) => cb(e.payload)),
     onRequestNewNote: (cb: () => void): Promise<UnlistenFn> =>
       listen<void>('event:request-new-note', () => cb()),
     onFocusSearch: (cb: () => void): Promise<UnlistenFn> =>
@@ -142,9 +121,7 @@ export const suijian = {
     onRequestHide: (cb: () => void): Promise<UnlistenFn> =>
       listen<void>('event:request-hide', () => cb()),
     onRequestQuit: (cb: () => void): Promise<UnlistenFn> =>
-      listen<void>('event:request-quit', () => cb()),
-    onHotkeyStatus: (cb: (status: HotkeyStatus) => void): Promise<UnlistenFn> =>
-      listen<HotkeyStatus>('event:hotkey-status', (e) => cb(e.payload))
+      listen<void>('event:request-quit', () => cb())
   }
 }
 

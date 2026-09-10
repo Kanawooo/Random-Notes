@@ -38,17 +38,6 @@ export interface UpdateNoteInput {
   tag_ids?: string[]
 }
 
-export interface ListNotesOptions {
-  scope?: NoteScope
-  limit?: number
-}
-
-export interface SearchNotesOptions {
-  query: string
-  scope?: NoteScope
-  limit?: number
-}
-
 export interface BatchResult {
   affectedCount: number
 }

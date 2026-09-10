@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef } from 'react'
+﻿import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { suijian } from '../lib/api'
 import type { AppSettings, Tag, BackupInspectResult } from '../types'
 import { toErrMsg } from '../lib/errors'
@@ -51,7 +51,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [inspectResult, setInspectResult] = useState<BackupInspectResult | null>(null)
   const [isRestoring, setIsRestoring] = useState(false)
 
-  const loadSettingsAndTags = async () => {
+  // 稳定性依据：函数体仅闭包 setState 与 ref（均为稳定引用），空依赖安全，引用恒定可作 effect 依赖
+  const loadSettingsAndTags = useCallback(async () => {
     try {
       const s = await suijian.settings.getAll()
       setHotkeyInput(s.hotkey)
@@ -81,7 +82,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       console.error('Failed to load settings or tags:', err)
       setLoadError('加载设置失败：' + toErrMsg(err))
     }
-  }
+  }, [])
 
   // 消息定时器统一由 ref 管理：set 前清旧值，卸载时清理，避免卸载后 setState
   const flashActionMsg = (msg: string) => {
@@ -98,7 +99,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   useEffect(() => {
     loadSettingsAndTags()
-  }, [])
+  }, [loadSettingsAndTags])
 
   const SHORTCUT_FIELD_LABELS: Record<ShortcutField, string> = {
     hotkey: '全局召唤键',
@@ -134,6 +135,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     if (keyName === ' ') keyName = 'Space'
     else if (keyName === 'Escape') keyName = 'Escape'
     else if (keyName.length === 1) keyName = keyName.toUpperCase()
+
+    const noModifier = !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey
+    if (noModifier && (keyName.length === 1 || keyName === 'Space')) {
+      setScWarnings((prev) => ({
+        ...prev,
+        [field]: '裸按键会占用该字符的输入，请搭配 Ctrl/Alt/Shift，或改用 F2 等功能键'
+      }))
+      return
+    }
 
     parts.push(keyName)
     const combo = parts.join('+')
@@ -177,11 +187,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const handleSaveActionShortcuts = async () => {
     try {
+      // dismiss 已无 UI 入口：历史存量可能是裸字符（如 X/Space），后端校验会因此拒绝整单保存；
+      // 发请求前归一为默认值 Escape，其余合法值原样保留
+      const rawDismiss = loadedShortcutsRef.current?.dismiss
+      const normalizedDismiss =
+        !rawDismiss || rawDismiss === 'Space' || rawDismiss.length === 1 ? 'Escape' : rawDismiss
       const updated = await suijian.settings.updateActionShortcuts({
         shortcutNewNote: newNoteInput,
         shortcutBackToSearch: backSearchInput,
-        // 收起不再可配：后端签名保留第四键，固定回传存量值（存量自定义 dismiss 不参与本次修改）
-        shortcutDismiss: loadedShortcutsRef.current?.dismiss ?? 'Escape'
+        // 收起不再可配：后端签名保留第四键，回传归一后的值
+        shortcutDismiss: normalizedDismiss
       })
       flashActionMsg('应用内快捷键已更新！')
       setScWarnings({})
