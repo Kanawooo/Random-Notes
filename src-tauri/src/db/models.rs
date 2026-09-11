@@ -255,6 +255,65 @@ pub struct BackupNoteData {
     pub attachments: Option<Vec<BackupAttachmentItem>>,
 }
 
+// ---------- 云端备份（坚果云 WebDAV）DTO：wire 侧显式 camelCase ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudBackupConfig {
+    pub enabled: bool,
+    pub interval: String,
+    #[serde(rename = "keepCount")]
+    pub keep_count: i64,
+    pub account: String,
+    #[serde(rename = "davUrl")]
+    pub dav_url: String,
+    #[serde(rename = "hasPassword")]
+    pub has_password: bool,
+    #[serde(rename = "lastSuccessAt")]
+    pub last_success_at: Option<String>,
+    #[serde(rename = "lastError")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudBackupConfigInput {
+    pub enabled: bool,
+    pub interval: String,
+    #[serde(rename = "keepCount")]
+    pub keep_count: i64,
+    pub account: String,
+    #[serde(rename = "davUrl")]
+    pub dav_url: String,
+    /// 留空（None 或空串）表示沿用已存密码，不回传也不清空
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudBackupFile {
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    #[serde(rename = "sizeBytes")]
+    pub size_bytes: i64,
+    #[serde(rename = "modifiedAt")]
+    pub modified_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudBackupRunResult {
+    /// "uploaded" 或 "nochange"
+    pub status: String,
+    #[serde(rename = "fileName")]
+    pub file_name: Option<String>,
+    #[serde(rename = "sizeBytes")]
+    pub size_bytes: Option<u64>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudBackupTestResult {
+    pub ok: bool,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupManifest {
     pub version: i64,

@@ -15,7 +15,12 @@ import type {
   HotkeyStatus,
   AppInfo,
   BackupExportResult,
-  BackupRestoreResult
+  BackupRestoreResult,
+  CloudBackupConfig,
+  CloudBackupConfigInput,
+  CloudBackupFile,
+  CloudBackupRunResult,
+  CloudBackupTestResult
 } from '../types'
 
 export const suijian = {
@@ -72,6 +77,29 @@ export const suijian = {
       invoke<import('../types').BackupInspectResult>('backup_inspect_select'),
     restoreConfirm: (token: string): Promise<BackupRestoreResult> =>
       invoke<BackupRestoreResult>('backup_restore_confirm', { token })
+  },
+  cloudBackup: {
+    configGet: (): Promise<CloudBackupConfig> =>
+      invoke<CloudBackupConfig>('cloud_backup_config_get'),
+    configUpdate: (input: CloudBackupConfigInput): Promise<CloudBackupConfig> =>
+      invoke<CloudBackupConfig>('cloud_backup_config_update', { input }),
+    testConnection: (args: {
+      account: string
+      password?: string
+      davUrl: string
+    }): Promise<CloudBackupTestResult> =>
+      invoke<CloudBackupTestResult>('cloud_backup_test_connection', {
+        account: args.account,
+        password: args.password,
+        davUrl: args.davUrl
+      }),
+    run: (): Promise<CloudBackupRunResult> =>
+      invoke<CloudBackupRunResult>('cloud_backup_run'),
+    list: (): Promise<CloudBackupFile[]> =>
+      invoke<CloudBackupFile[]>('cloud_backup_list'),
+    restorePrepare: (fileName: string): Promise<import('../types').BackupInspectResult> =>
+      invoke<import('../types').BackupInspectResult>('cloud_backup_restore_prepare', { fileName }),
+    restoreCancel: (): Promise<void> => invoke<void>('cloud_backup_restore_cancel')
   },
   settings: {
     getAll: (): Promise<AppSettings> =>

@@ -24,6 +24,10 @@ rusqlite = { version = "0.33", features = ["bundled"] }
 uuid = { version = "1.10", features = ["v4", "fast-rng"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
+# 云端备份 HTTP 客户端：走 native-tls（Windows 用系统 SChannel 与系统根证书，不额外打包 rustls 根证书）
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+# WebDAV PROPFIND 207 响应解析（按 local-name 匹配，兼容各前缀写法）
+quick-xml = "0.41"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 arboard = "3.4"

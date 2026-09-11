@@ -1,6 +1,13 @@
 ﻿import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { suijian } from '../lib/api'
-import type { AppSettings, Tag, BackupInspectResult } from '../types'
+import { UiIcon } from './UiIcon'
+import type {
+  AppSettings,
+  Tag,
+  BackupInspectResult,
+  CloudBackupFile,
+  CloudBackupInterval
+} from '../types'
 import { toErrMsg } from '../lib/errors'
 import { normalizeShortcutSetting, detectConflict } from '../lib/shortcuts'
 
@@ -9,8 +16,24 @@ type ShortcutField = 'hotkey' | 'newNote' | 'back'
 interface SettingsViewProps {
   onSettingsChanged?: (settings: AppSettings) => void
   onTagsChanged?: (deletedTagId?: string) => void
-  onDataRestored?: () => void
+  onDataRestored?: (message: string) => void
   onBeforeRestore?: () => Promise<boolean>
+}
+
+// 云端备份：ISO 时间 → 本地可读（解析失败保留原文）；字节数 → 易读单位
+function formatCloudTime(isoStr: string | null): string {
+  if (!isoStr) return ''
+  const d = new Date(isoStr)
+  if (Number.isNaN(d.getTime())) return isoStr
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function formatCloudSize(bytes: number | null): string {
+  if (bytes == null) return '未知大小'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -51,6 +74,43 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [inspectResult, setInspectResult] = useState<BackupInspectResult | null>(null)
   const [isRestoring, setIsRestoring] = useState(false)
 
+  // Cloud backup
+  const [cloudEnabled, setCloudEnabled] = useState(false)
+  const [cloudInterval, setCloudInterval] = useState<CloudBackupInterval>('daily')
+  const [cloudKeepCount, setCloudKeepCount] = useState(5)
+  const [cloudAccount, setCloudAccount] = useState('')
+  const [cloudSavedAccount, setCloudSavedAccount] = useState('')
+  const [cloudPassword, setCloudPassword] = useState('')
+  const [cloudDavUrl, setCloudDavUrl] = useState('https://dav.jianguoyun.com/dav/')
+  const [cloudHasPassword, setCloudHasPassword] = useState(false)
+  const [cloudLastSuccessAt, setCloudLastSuccessAt] = useState<string | null>(null)
+  const [cloudLastError, setCloudLastError] = useState<string | null>(null)
+  const [cloudConfigSaving, setCloudConfigSaving] = useState(false)
+  const [cloudTesting, setCloudTesting] = useState(false)
+  const [cloudConfigSuccess, setCloudConfigSuccess] = useState(true)
+  const [cloudConfigMessage, setCloudConfigMessage] = useState<string | null>(null)
+  const [cloudConfigLoadError, setCloudConfigLoadError] = useState<string | null>(null)
+  const [cloudRunning, setCloudRunning] = useState(false)
+  const [cloudBackupStatus, setCloudBackupStatus] = useState<'idle' | 'success' | 'info' | 'error'>('idle')
+  const [cloudBackupMessage, setCloudBackupMessage] = useState<string | null>(null)
+  const [cloudListLoading, setCloudListLoading] = useState(false)
+  const [cloudRestoreOpen, setCloudRestoreOpen] = useState(false)
+  const [cloudRestoreFiles, setCloudRestoreFiles] = useState<CloudBackupFile[]>([])
+  const [cloudRestoreSelected, setCloudRestoreSelected] = useState<string | null>(null)
+  const [cloudRestorePreparing, setCloudRestorePreparing] = useState(false)
+  const [cloudRestoreInspect, setCloudRestoreInspect] = useState<BackupInspectResult | null>(null)
+  const [cloudRestoreError, setCloudRestoreError] = useState<string | null>(null)
+  // 下载检查的世代号：关窗或重新选择会作废进行中的请求，避免旧结果覆盖新界面
+  const cloudRestoreSeqRef = useRef(0)
+  // 已保存的云端配置快照：点「立即备份」前比对，避免用未保存的编辑静默按旧配置备份
+  const cloudBaselineRef = useRef<{
+    enabled: boolean
+    interval: CloudBackupInterval
+    keepCount: number
+    account: string
+    davUrl: string
+  } | null>(null)
+
   // 稳定性依据：函数体仅闭包 setState 与 ref（均为稳定引用），空依赖安全，引用恒定可作 effect 依赖
   const loadSettingsAndTags = useCallback(async () => {
     try {
@@ -84,6 +144,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   }, [])
 
+  // 云端备份配置独立加载：失败时不影响其他设置区块，错误就地展示
+  const loadCloudBackupConfig = useCallback(async () => {
+    try {
+      const cfg = await suijian.cloudBackup.configGet()
+      setCloudEnabled(cfg.enabled)
+      setCloudInterval(cfg.interval)
+      setCloudKeepCount(cfg.keepCount)
+      setCloudAccount(cfg.account)
+      setCloudSavedAccount(cfg.account)
+      setCloudDavUrl(cfg.davUrl)
+      setCloudHasPassword(cfg.hasPassword)
+      setCloudLastSuccessAt(cfg.lastSuccessAt)
+      setCloudLastError(cfg.lastError)
+      cloudBaselineRef.current = {
+        enabled: cfg.enabled,
+        interval: cfg.interval,
+        keepCount: cfg.keepCount,
+        account: cfg.account,
+        davUrl: cfg.davUrl
+      }
+      setCloudConfigLoadError(null)
+    } catch (err) {
+      setCloudConfigLoadError('加载云端备份设置失败：' + toErrMsg(err))
+    }
+  }, [])
+
   // 消息定时器统一由 ref 管理：set 前清旧值，卸载时清理，避免卸载后 setState
   const flashActionMsg = (msg: string) => {
     if (msgTimerRef.current) clearTimeout(msgTimerRef.current)
@@ -100,6 +186,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   useEffect(() => {
     loadSettingsAndTags()
   }, [loadSettingsAndTags])
+
+  useEffect(() => {
+    loadCloudBackupConfig()
+  }, [loadCloudBackupConfig])
 
   const SHORTCUT_FIELD_LABELS: Record<ShortcutField, string> = {
     hotkey: '全局召唤键',
@@ -367,33 +457,236 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
   }
 
-  const handleConfirmRestore = async () => {
-    if (!inspectResult?.token) return
+  // 本地/云端恢复共用：恢复前先 flush 未保存编辑，成功后统一提示并触发数据刷新；
+  // 返回 null 表示成功，否则为失败文案（云端恢复据此把错误显示在弹窗内）
+  const performRestore = async (token: string): Promise<string | null> => {
     setIsRestoring(true)
     setBackupMessage('正在检查并恢复数据，请稍候...')
     try {
       if (onBeforeRestore) {
         const canRestore = await onBeforeRestore()
         if (!canRestore) {
+          const msg = '当前正在编辑的便签保存未完成或失败，已取消恢复以避免丢失未保存内容'
           setBackupStatus('error')
-          setBackupMessage('当前正在编辑的便签保存未完成或失败，已取消恢复以避免丢失未保存内容')
-          setIsRestoring(false)
-          return
+          setBackupMessage(msg)
+          return msg
         }
       }
-      const res = await suijian.backup.restoreConfirm(inspectResult.token)
+      const res = await suijian.backup.restoreConfirm(token)
+      // 恢复成功后视图会切回搜索页，设置页内文案不可见；摘要上浮到 App 层成功横幅
+      const restoredSummary = `已恢复 ${res.restoredNoteCount ?? 0} 篇便签，${res.restoredTagCount ?? 0} 个标签，${res.restoredAttachmentCount ?? 0} 个附件`
       setBackupStatus('success')
-      setBackupMessage(
-        `资料库恢复成功！已恢复 ${res.restoredNoteCount ?? 0} 篇便签，${res.restoredTagCount ?? 0} 个标签，${res.restoredAttachmentCount ?? 0} 个附件。`
-      )
+      setBackupMessage(`资料库恢复成功！${restoredSummary}。`)
       setInspectResult(null)
-      onDataRestored?.()
+      onDataRestored?.(restoredSummary)
+      return null
     } catch (err) {
+      const msg = `恢复备份失败: ${toErrMsg(err)}`
       setBackupStatus('error')
-      setBackupMessage(`恢复备份失败: ${toErrMsg(err)}`)
+      setBackupMessage(msg)
+      return msg
     } finally {
       setIsRestoring(false)
     }
+  }
+
+  const handleConfirmRestore = async () => {
+    if (!inspectResult?.token) return
+    await performRestore(inspectResult.token)
+  }
+
+  // Cloud backup
+  const refreshCloudBackupStatus = async () => {
+    try {
+      const cfg = await suijian.cloudBackup.configGet()
+      setCloudLastSuccessAt(cfg.lastSuccessAt)
+      setCloudLastError(cfg.lastError)
+    } catch {
+      // 状态刷新失败不打断备份主流程
+    }
+  }
+
+  const handleCloudSaveConfig = async () => {
+    if (cloudConfigSaving || cloudTesting) return
+    // 账号已更改但未输入新密码：旧密码对新账号无效，提前拦下避免保存出「永远 401」的配置；
+    // 清空账号（弃用云端备份）不受此限制
+    if (!cloudPassword && cloudAccount.trim() !== '' && cloudAccount.trim() !== cloudSavedAccount) {
+      setCloudConfigSuccess(false)
+      setCloudConfigMessage('账号已更改，请重新输入应用密码后再保存')
+      return
+    }
+    setCloudConfigSaving(true)
+    setCloudConfigMessage(null)
+    try {
+      const cfg = await suijian.cloudBackup.configUpdate({
+        enabled: cloudEnabled,
+        interval: cloudInterval,
+        keepCount: cloudKeepCount,
+        account: cloudAccount,
+        davUrl: cloudDavUrl,
+        password: cloudPassword || undefined
+      })
+      setCloudEnabled(cfg.enabled)
+      setCloudInterval(cfg.interval)
+      setCloudKeepCount(cfg.keepCount)
+      setCloudAccount(cfg.account)
+      setCloudSavedAccount(cfg.account)
+      setCloudDavUrl(cfg.davUrl)
+      setCloudHasPassword(cfg.hasPassword)
+      setCloudLastSuccessAt(cfg.lastSuccessAt)
+      setCloudLastError(cfg.lastError)
+      setCloudPassword('')
+      cloudBaselineRef.current = {
+        enabled: cfg.enabled,
+        interval: cfg.interval,
+        keepCount: cfg.keepCount,
+        account: cfg.account,
+        davUrl: cfg.davUrl
+      }
+      setCloudConfigSuccess(true)
+      setCloudConfigMessage('云端备份设置已保存')
+    } catch (err) {
+      setCloudConfigSuccess(false)
+      setCloudConfigMessage('保存云端备份设置失败：' + toErrMsg(err))
+    } finally {
+      setCloudConfigSaving(false)
+    }
+  }
+
+  const handleCloudTestConnection = async () => {
+    if (cloudTesting || cloudConfigSaving) return
+    if (!cloudPassword && cloudAccount.trim() !== '' && cloudAccount.trim() !== cloudSavedAccount) {
+      setCloudConfigSuccess(false)
+      setCloudConfigMessage('账号已更改，请重新输入应用密码后再测试')
+      return
+    }
+    setCloudTesting(true)
+    setCloudConfigMessage(null)
+    try {
+      const res = await suijian.cloudBackup.testConnection({
+        account: cloudAccount,
+        password: cloudPassword || undefined,
+        davUrl: cloudDavUrl
+      })
+      setCloudConfigSuccess(res.ok)
+      setCloudConfigMessage(res.ok ? res.message : `连接失败：${res.message}`)
+    } catch (err) {
+      setCloudConfigSuccess(false)
+      setCloudConfigMessage('测试连接失败：' + toErrMsg(err))
+    } finally {
+      setCloudTesting(false)
+    }
+  }
+
+  const handleCloudBackupNow = async () => {
+    if (cloudRunning) return
+    const base = cloudBaselineRef.current
+    const dirty =
+      !base ||
+      cloudEnabled !== base.enabled ||
+      cloudInterval !== base.interval ||
+      cloudKeepCount !== base.keepCount ||
+      cloudAccount.trim() !== base.account ||
+      cloudDavUrl.trim() !== base.davUrl ||
+      cloudPassword !== ''
+    if (dirty) {
+      setCloudBackupStatus('info')
+      setCloudBackupMessage('云端备份设置有未保存的改动，请先点「保存设置」再备份')
+      return
+    }
+    setCloudRunning(true)
+    setCloudBackupMessage(null)
+    try {
+      const res = await suijian.cloudBackup.run()
+      setCloudBackupStatus('success')
+      setCloudBackupMessage(
+        res.status === 'nochange'
+          ? res.message
+          : `备份完成${res.fileName ? `：${res.fileName}` : ''}（${formatCloudSize(res.sizeBytes)}）`
+      )
+    } catch (err) {
+      const msg = toErrMsg(err)
+      const busy = msg.includes('正在进行中')
+      // 互斥忙碌提示是正常状态说明，不按失败展示（灰色 info）
+      setCloudBackupStatus(busy ? 'info' : 'error')
+      setCloudBackupMessage(busy ? msg : '云端备份失败：' + msg)
+    } finally {
+      setCloudRunning(false)
+    }
+    await refreshCloudBackupStatus()
+  }
+
+  const handleOpenCloudRestore = async () => {
+    if (cloudListLoading) return
+    setCloudRestoreOpen(true)
+    setCloudRestoreFiles([])
+    setCloudRestoreSelected(null)
+    setCloudRestoreInspect(null)
+    setCloudRestoreError(null)
+    setCloudListLoading(true)
+    try {
+      const files = await suijian.cloudBackup.list()
+      setCloudRestoreFiles(files)
+    } catch (err) {
+      setCloudRestoreError('读取云端备份列表失败：' + toErrMsg(err))
+    } finally {
+      setCloudListLoading(false)
+    }
+  }
+
+  // 选中即下载检查（不修改本地数据），检查通过后再二次确认恢复
+  const handleSelectCloudRestoreFile = async (fileName: string) => {
+    if (cloudRestorePreparing || isRestoring) return
+    const seq = ++cloudRestoreSeqRef.current
+    setCloudRestoreSelected(fileName)
+    setCloudRestoreError(null)
+    setCloudRestorePreparing(true)
+    try {
+      const res = await suijian.cloudBackup.restorePrepare(fileName)
+      if (cloudRestoreSeqRef.current !== seq) return
+      setCloudRestoreInspect(res)
+    } catch (err) {
+      if (cloudRestoreSeqRef.current !== seq) return
+      setCloudRestoreError('下载并检查云端备份失败：' + toErrMsg(err))
+    } finally {
+      if (cloudRestoreSeqRef.current === seq) setCloudRestorePreparing(false)
+    }
+  }
+
+  const handleCloseCloudRestore = () => {
+    if (isRestoring) return
+    cloudRestoreSeqRef.current += 1
+    // 下载进行中关闭即取消下载：后端置位中断标志，中断结果由世代号丢弃
+    if (cloudRestorePreparing) {
+      void suijian.cloudBackup.restoreCancel().catch(() => {})
+    }
+    setCloudRestoreOpen(false)
+    setCloudRestoreFiles([])
+    setCloudRestoreSelected(null)
+    setCloudRestoreInspect(null)
+    setCloudRestoreError(null)
+    // 世代号已作废下载回调，preparing 必须在此复位，否则重开弹窗会卡在“正在下载并检查”
+    setCloudRestorePreparing(false)
+  }
+
+  // 点背景：下载中不做任何事（误触不应中断下载）；其他状态关闭弹窗
+  const handleCloudRestoreBackdrop = () => {
+    if (cloudRestorePreparing) return
+    handleCloseCloudRestore()
+  }
+
+  const handleCloudRestoreConfirm = async () => {
+    if (!cloudRestoreInspect?.token || isRestoring) return
+    const errMsg = await performRestore(cloudRestoreInspect.token)
+    if (errMsg) {
+      setCloudRestoreError(errMsg)
+      return
+    }
+    setCloudRestoreOpen(false)
+    setCloudRestoreFiles([])
+    setCloudRestoreSelected(null)
+    setCloudRestoreInspect(null)
+    setCloudRestoreError(null)
   }
 
   // 未保存指示：归一化后比较，避免大小写/写法差异误报
@@ -777,6 +1070,313 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* 云端备份（坚果云 WebDAV） */}
+      <div className="settings-section">
+        <h3 className="settings-title">云端备份</h3>
+        <div className="setting-desc" style={{ marginBottom: '12px' }}>
+          把完整备份包（便签、标签、图片附件）上传到坚果云，换电脑、重装或误删时可从这里恢复。应用密码仅存本机，不会随备份上传。
+        </div>
+        {cloudConfigLoadError && (
+          <div className="error-banner" role="alert">
+            {cloudConfigLoadError}
+          </div>
+        )}
+
+        <div className="setting-row">
+          <div>
+            <div>坚果云账号</div>
+            <div className="setting-desc">坚果云注册邮箱</div>
+          </div>
+          <input
+            type="text"
+            className="btn"
+            style={{ width: '220px', textAlign: 'left', fontFamily: 'var(--font-sans)', height: '32px' }}
+            value={cloudAccount}
+            onChange={(e) => setCloudAccount(e.target.value)}
+            placeholder="you@example.com"
+            aria-label="坚果云账号"
+          />
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <div>应用密码</div>
+            <div className="setting-desc">在坚果云网页「安全选项」中生成，仅存本机</div>
+          </div>
+          <input
+            type="password"
+            className="btn"
+            style={{ width: '220px', textAlign: 'left', fontFamily: 'var(--font-sans)', height: '32px' }}
+            value={cloudPassword}
+            onChange={(e) => setCloudPassword(e.target.value)}
+            placeholder={cloudHasPassword ? '已保存，留空保持不变' : '请输入应用密码'}
+            aria-label="应用密码"
+          />
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <div>服务器地址</div>
+            <div className="setting-desc">默认坚果云，可改为自建 WebDAV 地址</div>
+          </div>
+          <input
+            type="text"
+            className="btn"
+            style={{ width: '220px', textAlign: 'left', fontFamily: 'var(--font-sans)', height: '32px' }}
+            value={cloudDavUrl}
+            onChange={(e) => setCloudDavUrl(e.target.value)}
+            placeholder="https://dav.jianguoyun.com/dav/"
+            aria-label="WebDAV 服务器地址"
+          />
+        </div>
+
+        {cloudDavUrl.trim().startsWith('http://') && (
+          <div className="setting-desc" style={{ color: 'var(--danger-color)', marginTop: '6px' }}>
+            http 地址下账号与应用密码将以明文传输，建议改用 https://
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '8px', marginTop: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleCloudSaveConfig}
+            disabled={cloudConfigSaving || cloudTesting}
+          >
+            {cloudConfigSaving ? '保存中...' : '保存设置'}
+          </button>
+          <button type="button" className="btn" onClick={handleCloudTestConnection} disabled={cloudTesting || cloudConfigSaving}>
+            {cloudTesting ? '测试中...' : '测试连接'}
+          </button>
+          {cloudConfigMessage && (
+            <span
+              style={{
+                fontSize: '12px',
+                color: cloudConfigSuccess ? 'var(--sage-success)' : 'var(--danger-color)'
+              }}
+              role="status"
+              aria-live="polite"
+            >
+              {cloudConfigMessage}
+            </span>
+          )}
+        </div>
+
+        <div className="setting-row" style={{ marginTop: '12px' }}>
+          <div>
+            <div>自动备份</div>
+            <div className="setting-desc">随笺运行期间按节奏检查，内容有变化才上传；关闭后不联网</div>
+          </div>
+          <input
+            type="checkbox"
+            checked={cloudEnabled}
+            onChange={(e) => setCloudEnabled(e.target.checked)}
+            aria-label="自动备份开关"
+          />
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <div>检查间隔</div>
+            <div className="setting-desc">自动备份的检查节奏</div>
+          </div>
+          <select
+            className="cloud-select"
+            value={cloudInterval}
+            onChange={(e) => setCloudInterval(e.target.value as CloudBackupInterval)}
+            aria-label="自动备份检查间隔"
+          >
+            <option value="daily">每天</option>
+            <option value="every3days">每 3 天</option>
+            <option value="weekly">每周</option>
+          </select>
+        </div>
+
+        <div className="setting-row">
+          <div>
+            <div>云端保留份数</div>
+            <div className="setting-desc">超出后自动删除最早的一份</div>
+          </div>
+          <select
+            className="cloud-select"
+            value={cloudKeepCount}
+            onChange={(e) => setCloudKeepCount(Number(e.target.value))}
+            aria-label="云端保留份数"
+          >
+            <option value={3}>3 份</option>
+            <option value={5}>5 份</option>
+            <option value={10}>10 份</option>
+          </select>
+        </div>
+
+        <div className="setting-row" style={{ alignItems: 'center' }}>
+          <div>
+            <div>立即备份</div>
+            <div className="setting-desc">把当前全部便签、标签与图片附件打包上传到坚果云</div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleCloudBackupNow}
+            disabled={cloudRunning}
+            aria-label="立即备份"
+          >
+            {cloudRunning ? '备份中...' : '立即备份'}
+          </button>
+        </div>
+
+        <div className="cloud-status-line">
+          <span>上次成功：{formatCloudTime(cloudLastSuccessAt) || '尚无'}</span>
+          {cloudLastError && <span className="cloud-status-error">上次失败：{cloudLastError}</span>}
+        </div>
+
+        {cloudBackupMessage && (
+          <div
+            style={{
+              fontSize: '12px',
+              marginTop: '8px',
+              padding: '8px 12px',
+              borderRadius: '4px',
+              backgroundColor:
+                cloudBackupStatus === 'error'
+                  ? 'rgba(239, 68, 68, 0.1)'
+                  : cloudBackupStatus === 'info'
+                    ? 'rgba(100, 116, 139, 0.1)'
+                    : 'rgba(16, 185, 129, 0.1)',
+              color:
+                cloudBackupStatus === 'error'
+                  ? 'var(--danger-color)'
+                  : cloudBackupStatus === 'info'
+                    ? 'var(--text-secondary)'
+                    : 'var(--sage-success)'
+            }}
+            role="status"
+          >
+            {cloudBackupMessage}
+          </div>
+        )}
+
+        <div className="setting-row" style={{ alignItems: 'center', marginTop: '12px' }}>
+          <div>
+            <div>从云端恢复</div>
+            <div className="setting-desc">列出云端备份，选择后下载检查并恢复本地资料库</div>
+          </div>
+          <button
+            type="button"
+            className="btn"
+            style={{ borderColor: 'var(--cobalt-focus)', color: 'var(--cobalt-focus)' }}
+            onClick={handleOpenCloudRestore}
+            disabled={cloudListLoading || isRestoring}
+            aria-label="从云端恢复"
+          >
+            {cloudListLoading ? '读取中...' : '从云端恢复'}
+          </button>
+        </div>
+      </div>
+
+      {cloudRestoreOpen && (
+        <div className="modal-backdrop" onClick={handleCloudRestoreBackdrop}>
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="从云端恢复"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3>从云端恢复</h3>
+              <button
+                type="button"
+                className="modal-close-btn"
+                data-tip="关闭"
+                onClick={handleCloseCloudRestore}
+                disabled={isRestoring}
+                aria-label="关闭云端恢复弹窗"
+              >
+                <UiIcon name="close" size={16} />
+              </button>
+            </div>
+            <div className="modal-body">
+              {cloudRestoreError && (
+                <div className="error-banner" role="alert" style={{ marginBottom: '10px' }}>
+                  {cloudRestoreError}
+                </div>
+              )}
+
+              {cloudRestoreInspect ? (
+                <>
+                  <div style={{ fontWeight: 600, fontSize: '13px', marginBottom: '6px' }}>备份检查完成</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                    文件：{cloudRestoreInspect.fileName}
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                    包含 {cloudRestoreInspect.noteCount ?? 0} 篇便签，{cloudRestoreInspect.tagCount ?? 0} 个标签，{cloudRestoreInspect.attachmentCount ?? 0} 个附件，共 {formatCloudSize(cloudRestoreInspect.totalByteSize ?? null)}。恢复前会自动生成安全快照，确认后将用备份内容替换本地资料库。
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                    <button type="button" className="btn" onClick={handleCloseCloudRestore} disabled={isRestoring}>
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={handleCloudRestoreConfirm}
+                      disabled={isRestoring}
+                    >
+                      {isRestoring ? '恢复中...' : '确认恢复'}
+                    </button>
+                  </div>
+                </>
+              ) : cloudRestorePreparing ? (
+                <>
+                  <div className="setting-desc" style={{ marginBottom: '12px' }}>
+                    正在下载{cloudRestoreSelected ? `：${cloudRestoreSelected}` : ''}并检查，请稍候…（关闭此窗口将取消下载）
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button type="button" className="btn" onClick={handleCloseCloudRestore}>
+                      取消下载
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="setting-desc" style={{ marginBottom: '10px' }}>
+                    选择要恢复的云端备份（最新在前）。点击后会先下载并检查，检查通过再确认恢复。
+                  </div>
+                  {cloudListLoading ? (
+                    <div className="setting-desc">正在读取云端备份列表…</div>
+                  ) : cloudRestoreFiles.length === 0 ? (
+                    !cloudRestoreError && <div className="setting-desc">云端暂无备份</div>
+                  ) : (
+                    <div className="cloud-restore-list" role="listbox" aria-label="云端备份列表">
+                      {cloudRestoreFiles.map((file) => (
+                        <button
+                          key={file.fileName}
+                          type="button"
+                          role="option"
+                          aria-selected={cloudRestoreSelected === file.fileName}
+                          className={`cloud-restore-item ${cloudRestoreSelected === file.fileName ? 'selected' : ''}`}
+                          onClick={() => handleSelectCloudRestoreFile(file.fileName)}
+                        >
+                          <span className="cloud-restore-item-name">{file.fileName}</span>
+                          <span className="cloud-restore-item-meta">
+                            {formatCloudTime(file.modifiedAt)} · {formatCloudSize(file.sizeBytes)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '12px' }}>
+                    <button type="button" className="btn" onClick={handleCloseCloudRestore}>
+                      取消
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

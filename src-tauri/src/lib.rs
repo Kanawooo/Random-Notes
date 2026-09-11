@@ -6,11 +6,13 @@ pub mod utils;
 
 use commands::*;
 use commands::window::hide_main_window;
+use db::fts::reindex_all;
 use db::models::{HotkeyStatus, WindowBounds};
 use db::DbService;
 use protocol::handle_attachment_protocol;
 use services::attachment_service::AttachmentService;
 use services::backup_service::BackupService;
+use services::cloud_backup_service::CloudBackupService;
 use services::notes_service::NotesService;
 use services::purge_service::PurgeService;
 use services::settings_service::SettingsService;
@@ -35,6 +37,7 @@ pub struct AppState {
     pub settings_service: Arc<SettingsService>,
     pub purge_service: Arc<PurgeService>,
     pub backup_service: Arc<BackupService>,
+    pub cloud_backup_service: Arc<CloudBackupService>,
     pub dialog_open: Arc<AtomicBool>,
     /// (备份路径, 签发时刻)：token 无过期会随反复 inspect 无界增长，消费前按 30 分钟窗口清理
     pub pending_restore: Arc<Mutex<HashMap<String, (PathBuf, std::time::Instant)>>>,
@@ -138,6 +141,50 @@ pub fn run() {
         tags_service.clone(),
         attachment_service.clone(),
     ));
+    let cloud_backup_service = Arc::new(CloudBackupService::new(
+        db_service.get_conn(),
+        settings_service.clone(),
+        backup_service.clone(),
+    ));
+
+    // FTS 索引启动兑底：notes_fts 不是 external content 虚表（正文存在 FTS 自身影子表），
+    // FTS5 'rebuild' 只按 FTS 内部内容重建倒排索引，补不回“正文有、索引缺”的历史缺行；
+    // integrity-check 也只校验索引与 FTS 内部内容一致，同样发现不了缺行。
+    // 改用 reindex_all（清空 notes_fts 后按 notes 正文全量重建），满足任一条件即执行：
+    // 1) integrity-check 失败；2) notes 与 notes_fts 的 id 差集非空。
+    // 成本：每次启动执行一次 integrity-check 与一次 id 差集扫描（O(便签数+索引行数)，
+    // 大库为每次启动多一段扫描）；reindex_all 仅在判定命中时执行。重建失败仅记日志——
+    // 搜索降级可用，正文数据不受影响，不得阻断启动。
+    // 恢复模式下内存库无有效正文（表可能都不存在），跳过
+    if read_only_recovery_error.is_none() {
+        let fts_conn = db_service.get_conn();
+        let fts_conn = fts_conn.lock().unwrap_or_else(|e| e.into_inner());
+        let integrity_failed = fts_conn
+            .execute(
+                "INSERT INTO notes_fts(notes_fts) VALUES('integrity-check')",
+                [],
+            )
+            .is_err();
+        // 差集判定本身出错（表损坏等）同样按“需要重建”处理，避免漏检
+        let needs_reindex = integrity_failed
+            || fts_conn
+                .query_row(
+                    "SELECT COUNT(*) FROM notes WHERE id NOT IN (SELECT note_id FROM notes_fts)",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count > 0)
+                .unwrap_or(true);
+        if needs_reindex {
+            eprintln!("[warn] notes_fts 完整性校验失败或存在缺行，执行全量重建索引");
+            if let Err(e) = reindex_all(&fts_conn) {
+                eprintln!(
+                    "[warn] notes_fts 重建失败（搜索结果可能不完整，正文与附件数据不受影响）: {}",
+                    e
+                );
+            }
+        }
+    }
 
     // Run startup 30-day purge only if DB is healthy
     if read_only_recovery_error.is_none() {
@@ -224,6 +271,7 @@ pub fn run() {
             settings_service,
             purge_service,
             backup_service,
+            cloud_backup_service,
             dialog_open,
             pending_restore,
             startup_hotkey_status,
@@ -397,6 +445,33 @@ pub fn run() {
             if state.read_only_recovery_error.is_none() {
                 let _ = state.attachment_service.reconcile_restore_artifacts();
                 let _ = state.attachment_service.cleanup_orphans();
+                // 锁外写盘中断留下的 .tmp 碎片：不被数据库引用，按修改时间（>1h）清理
+                let _ = state.attachment_service.cleanup_stale_temp_files();
+            }
+
+            // 云端备份临时目录均为可重建的纯暂存（上传包可重导、下载包可重下），
+            // 不涉及数据库引用判定，恢复模式下同样无条件清理
+            crate::services::cloud_backup_service::cleanup_temp_dirs();
+
+            // 云端自动备份调度：启动先检查一次，之后每 30 分钟 tick；
+            // 检查与上传都跑在阻塞线程池，不占 async worker、不阻塞 UI。
+            // 恢复模式下配置不可信（空内存库），不启动调度；临时目录清理保持无条件
+            if state.read_only_recovery_error.is_none() {
+                let cloud_backup_for_auto = state.cloud_backup_service.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let service = cloud_backup_for_auto.clone();
+                        let tick = tauri::async_runtime::spawn_blocking(move || {
+                            service.auto_check();
+                            std::thread::sleep(crate::services::cloud_backup_service::AUTO_CHECK_INTERVAL);
+                        })
+                        .await;
+                        if tick.is_err() {
+                            eprintln!("[warn] 云端自动备份调度任务异常退出");
+                            break;
+                        }
+                    }
+                });
             }
 
             // Setup System Tray
@@ -602,6 +677,13 @@ pub fn run() {
             backup::backup_export,
             backup::backup_inspect_select,
             backup::backup_restore_confirm,
+            cloud_backup::cloud_backup_config_get,
+            cloud_backup::cloud_backup_config_update,
+            cloud_backup::cloud_backup_test_connection,
+            cloud_backup::cloud_backup_run,
+            cloud_backup::cloud_backup_list,
+            cloud_backup::cloud_backup_restore_prepare,
+            cloud_backup::cloud_backup_restore_cancel,
             settings::settings_get_all,
             settings::settings_update,
             settings::settings_update_action_shortcuts,

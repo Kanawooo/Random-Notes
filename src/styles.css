@@ -619,7 +619,8 @@ body, html, #root {
 /* 自定义 tooltip：原生 title 在 26px 小按钮上不可靠（边缘 hover 抖动重置弹出计时；disabled 按钮不弹），
    改 CSS hover 即显；文案源 data-tip，无障碍名由 aria-label 承担 */
 .btn[data-tip],
-.tag-remove-btn[data-tip] {
+.tag-remove-btn[data-tip],
+.modal-close-btn[data-tip] {
   position: relative; /* tooltip 定位锚点 */
 }
 
@@ -853,6 +854,17 @@ body.image-resizing {
   background-color: #FDF2F2;
   border-left: 3px solid var(--danger-color);
   color: #991B1B;
+  padding: 6px 12px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.success-banner {
+  background-color: #F1F7F2;
+  border-left: 3px solid var(--sage-success);
+  color: #3F5A45;
   padding: 6px 12px;
   font-size: 12px;
   display: flex;
@@ -1247,4 +1259,77 @@ body.image-resizing {
   padding: 1px 4px;
   font-family: var(--font-mono);
   font-size: 10px;
+}
+
+/* 云端备份（坚果云 WebDAV） */
+.cloud-select {
+  height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--card-bg);
+  color: var(--ink-text);
+}
+
+.cloud-select:focus-visible {
+  outline: 2px solid var(--cobalt-focus);
+  outline-offset: 1px;
+}
+
+.cloud-status-line {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.cloud-status-error {
+  color: var(--danger-color);
+  word-break: break-all;
+}
+
+.cloud-restore-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.cloud-restore-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--card-bg);
+  color: var(--ink-text);
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cloud-restore-item:hover {
+  background-color: var(--hover-bg);
+}
+
+.cloud-restore-item.selected {
+  border-color: var(--cobalt-focus);
+  background-color: var(--selected-bg);
+}
+
+.cloud-restore-item-name {
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.cloud-restore-item-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
 }
