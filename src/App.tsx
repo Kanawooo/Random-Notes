@@ -51,6 +51,7 @@ export const App: React.FC = () => {
   const [recoveryStatus, setRecoveryStatus] = useState<RecoveryStatus | null>(null)
   const [isInitialized, setIsInitialized] = useState(false)
   const [errorBanner, setErrorBanner] = useState<string | null>(null)
+  const [successBanner, setSuccessBanner] = useState<string | null>(null)
   const [appVersion, setAppVersion] = useState('')
 
   const registeredFlushRef = useRef<(() => Promise<boolean>) | null>(null)
@@ -112,6 +113,8 @@ export const App: React.FC = () => {
     try {
       const list = await suijian.tags.list()
       setTags(list)
+      // 筛选标签可能已被其他入口（设置页/便签内标签弹窗）删除，不在最新列表则清空筛选，避免列表空且无法解除
+      setSelectedTagId((prev) => (prev && !list.some((t) => t.id === prev) ? null : prev))
     } catch (err) {
       console.error('Failed to load tags:', err)
       setErrorBanner('加载标签失败：' + toErrMsg(err))
@@ -266,7 +269,10 @@ export const App: React.FC = () => {
             try {
               if (registeredFlushRef.current) {
                 const ok = await registeredFlushRef.current()
-                if (!ok) return
+                if (!ok) {
+                  setErrorBanner('有内容尚未保存成功，已取消退出；请重试保存后再退出')
+                  return
+                }
               }
               await suijian.app.confirmQuit()
             } catch (err) {
@@ -326,6 +332,13 @@ export const App: React.FC = () => {
     const t = setTimeout(() => refreshNotesRef.current(), 250)
     return () => clearTimeout(t)
   }, [searchQuery, isInitialized, recoveryStatus?.isRecovery])
+
+  // 恢复成功横幅 5 秒后自动消失（再次触发时计时重置）
+  useEffect(() => {
+    if (!successBanner) return
+    const t = setTimeout(() => setSuccessBanner(null), 5000)
+    return () => clearTimeout(t)
+  }, [successBanner])
 
   // Normalization helpers for keyboard events
   // 两个可配置快捷键的归一化结果按设置缓存，避免每次按键处理重复解析（收起统一由全局召唤键承担）
@@ -482,14 +495,24 @@ export const App: React.FC = () => {
   }, [handleKeyDown])
 
   // Batch actions
-  const handleToggleCheck = (id: string) => {
+  // 以下回调喂给 memo 化的 NoteList/列表项，引用必须稳定；内联箭头函数会使整表 memo 失效
+  const handleToggleCheck = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
-  }
+  }, [])
+
+  const handleSelectNote = useCallback((note: Note) => {
+    setCurrentNote(note)
+    setView('editor')
+  }, [])
+
+  const handleFocusIndex = useCallback((index: number) => {
+    setFocusedIndex(index)
+  }, [])
 
   const handleToggleSelectAll = () => {
     if (selectedIds.size === notes.length && notes.length > 0) {
@@ -647,6 +670,21 @@ export const App: React.FC = () => {
         </div>
       )}
 
+      {/* 恢复成功提示横条：恢复完成后设置页立即切走，文案上浮到 App 层才可见 */}
+      {successBanner && (
+        <div className="success-banner" role="status">
+          <span>{successBanner}</span>
+          <button
+            type="button"
+            className="btn btn-icon"
+            onClick={() => setSuccessBanner(null)}
+            aria-label="关闭提示"
+          >
+            <UiIcon name="close" size={14} />
+          </button>
+        </div>
+      )}
+
       {/* 快捷键冲突警告横条 */}
       {hotkeyWarning && (
         <div className="warning-banner" role="alert" aria-label="热键冲突提示">
@@ -732,12 +770,9 @@ export const App: React.FC = () => {
             notes={notes}
             focusedIndex={focusedIndex}
             selectedIds={selectedIds}
-            onSelectNote={(note) => {
-              setCurrentNote(note)
-              setView('editor')
-            }}
+            onSelectNote={handleSelectNote}
             onToggleCheck={handleToggleCheck}
-            onFocusIndex={setFocusedIndex}
+            onFocusIndex={handleFocusIndex}
             searchQuery={searchQuery}
             newNoteShortcut={
               // bootstrap 无条件存 recoveryStatus 对象，故必须用 ?.isRecovery 判恢复态；
@@ -786,7 +821,7 @@ export const App: React.FC = () => {
             }
             return true
           }}
-          onDataRestored={() => {
+          onDataRestored={(message) => {
             setCurrentNote(null)
             setView('search')
             setSelectedIds(new Set())
@@ -794,6 +829,7 @@ export const App: React.FC = () => {
             setSearchQuery('')
             setFocusedIndex(0)
             setFocusTrigger((p) => p + 1)
+            setSuccessBanner(message)
 
             suijian.app.getRecoveryStatus().then((status) => {
               setRecoveryStatus(status.isRecovery ? status : null)

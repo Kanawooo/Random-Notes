@@ -27,6 +27,16 @@ impl DbService {
                 )
             })?;
 
+            // 与主连接一致的 busy_timeout：库被外部短暂占用（如 WAL 检查点）时等待锁而不是立即报错进恢复模式
+            ro_conn
+                .execute_batch("PRAGMA busy_timeout = 5000;")
+                .map_err(|e| {
+                    format!(
+                        "DatabaseService preflight check failed: cannot set busy_timeout: {}",
+                        e
+                    )
+                })?;
+
             // 1a. Integrity quick check
             let quick_check: String = ro_conn
                 .query_row("PRAGMA quick_check(1);", [], |r| r.get(0))
@@ -47,8 +57,8 @@ impl DbService {
             let user_objects: Vec<(String, String)> = stmt
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
 
             if !user_objects.is_empty() {
                 let has_migrations = user_objects
@@ -64,8 +74,8 @@ impl DbService {
                 let applied: Vec<i64> = m_stmt
                     .query_map([], |r| r.get::<_, i64>(0))
                     .map_err(|e| e.to_string())?
-                    .filter_map(|r| r.ok())
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())?;
 
                 let other_user_objs: Vec<_> = user_objects
                     .iter()

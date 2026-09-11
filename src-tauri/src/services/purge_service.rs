@@ -34,7 +34,7 @@ impl PurgeService {
                 .query_map(params![cutoff_str], |r| r.get::<_, String>(0))
                 .map_err(|e| e.to_string())?;
 
-            rows.filter_map(|r| r.ok()).collect()
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
         };
 
         if note_ids.is_empty() {

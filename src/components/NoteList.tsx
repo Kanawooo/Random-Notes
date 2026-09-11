@@ -1,4 +1,4 @@
-import React from 'react'
+﻿import React, { useEffect } from 'react'
 import { UiIcon } from './UiIcon'
 import type { Note } from '../types'
 
@@ -37,7 +37,82 @@ function formatDate(isoStr: string): string {
   }
 }
 
-export const NoteList: React.FC<NoteListProps> = ({
+interface NoteListItemProps {
+  note: Note
+  index: number
+  isFocused: boolean
+  isChecked: boolean
+  onSelectNote: (note: Note) => void
+  onToggleCheck: (id: string) => void
+  onFocusIndex: (index: number) => void
+}
+
+// 列表项独立 memo：hover/多选只重渲染受影响项，父级横幅等无关状态不再重渲染整表。
+// aria-selected 承载多选语义（selectedIds），selected class 视觉高亮承载键盘活动项（isFocused），
+// 两者分离：hover 仍移动视觉高亮，但不再改写读屏播报的“选中项”
+const NoteListItem: React.FC<NoteListItemProps> = ({
+  note,
+  index,
+  isFocused,
+  isChecked,
+  onSelectNote,
+  onToggleCheck,
+  onFocusIndex
+}) => {
+  return (
+    <div
+      id={`note-option-${note.id}`}
+      data-note-index={index}
+      role="option"
+      aria-selected={isChecked}
+      className={`note-item ${isFocused ? 'selected' : ''}`}
+      onClick={() => onSelectNote(note)}
+      onMouseEnter={() => onFocusIndex(index)}
+    >
+      <div className="note-item-header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+          <input
+            type="checkbox"
+            checked={isChecked}
+            onChange={(e) => {
+              e.stopPropagation()
+              onToggleCheck(note.id)
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="note-checkbox"
+            aria-label={`选择便签 ${note.title || '未命名便签'}`}
+          />
+          <span className="note-item-title">{note.title || '未命名便签'}</span>
+        </div>
+
+        <div className="note-item-meta">
+          {note.is_pinned && (
+            <span className="pin-icon" role="img" title="置顶" aria-label="置顶">
+              <UiIcon name="pin" size={13} />
+            </span>
+          )}
+          <span>{formatDate(note.updated_at)}</span>
+        </div>
+      </div>
+
+      {note.plain_text && <p className="note-item-preview">{note.plain_text}</p>}
+
+      {note.tags && note.tags.length > 0 && (
+        <div className="note-item-tags">
+          {note.tags.map((t) => (
+            <span key={t.id} className="tag-badge">
+              #{t.name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const MemoizedNoteListItem = React.memo(NoteListItem)
+
+const NoteListInner: React.FC<NoteListProps> = ({
   notes,
   focusedIndex,
   selectedIds,
@@ -47,6 +122,13 @@ export const NoteList: React.FC<NoteListProps> = ({
   searchQuery,
   newNoteShortcut
 }) => {
+  // 全局键盘模型下活动项不在列表 DOM 焦点内，focusedIndex 变化时把活动项滚进可视区；
+  // jsdom 未实现 scrollIntoView，可选调用避免测试环境因方法缺失报错
+  useEffect(() => {
+    const el = document.querySelector(`[data-note-index="${focusedIndex}"]`)
+    el?.scrollIntoView?.({ block: 'nearest' })
+  }, [focusedIndex])
+
   if (notes.length === 0) {
     return (
       <div className="notes-list-scroll empty-container">
@@ -72,64 +154,32 @@ export const NoteList: React.FC<NoteListProps> = ({
   // focusedIndex 语义基于完整 notes 数组（App 层上下键直接索引），置顶/最近子数组的位置索引不可用；
   // 渲染前建一次 id→全量索引的 Map，消除 renderNoteCard 内 indexOf 的 O(n²)
   const indexById = new Map(notes.map((n, i) => [n.id, i] as const))
+  const focusedNote = notes[focusedIndex]
 
   const renderNoteCard = (note: Note) => {
     const originalIndex = indexById.get(note.id) ?? 0
-    const isFocused = originalIndex === focusedIndex
-    const isChecked = selectedIds.has(note.id)
-
     return (
-      <div
+      <MemoizedNoteListItem
         key={note.id}
-        role="option"
-        aria-selected={isFocused}
-        className={`note-item ${isFocused ? 'selected' : ''}`}
-        onClick={() => onSelectNote(note)}
-        onMouseEnter={() => onFocusIndex(originalIndex)}
-      >
-        <div className="note-item-header">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-            <input
-              type="checkbox"
-              checked={isChecked}
-              onChange={(e) => {
-                e.stopPropagation()
-                onToggleCheck(note.id)
-              }}
-              onClick={(e) => e.stopPropagation()}
-              className="note-checkbox"
-              aria-label={`选择便签 ${note.title || '未命名便签'}`}
-            />
-            <span className="note-item-title">{note.title || '未命名便签'}</span>
-          </div>
-
-          <div className="note-item-meta">
-            {note.is_pinned && (
-              <span className="pin-icon" role="img" title="置顶" aria-label="置顶">
-                <UiIcon name="pin" size={13} />
-              </span>
-            )}
-            <span>{formatDate(note.updated_at)}</span>
-          </div>
-        </div>
-
-        {note.plain_text && <p className="note-item-preview">{note.plain_text}</p>}
-
-        {note.tags && note.tags.length > 0 && (
-          <div className="note-item-tags">
-            {note.tags.map((t) => (
-              <span key={t.id} className="tag-badge">
-                #{t.name}
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
+        note={note}
+        index={originalIndex}
+        isFocused={originalIndex === focusedIndex}
+        isChecked={selectedIds.has(note.id)}
+        onSelectNote={onSelectNote}
+        onToggleCheck={onToggleCheck}
+        onFocusIndex={onFocusIndex}
+      />
     )
   }
 
   return (
-    <div className="notes-list-scroll" role="listbox" aria-label="便签列表">
+    <div
+      className="notes-list-scroll"
+      role="listbox"
+      aria-label="便签列表"
+      aria-multiselectable="true"
+      aria-activedescendant={focusedNote ? `note-option-${focusedNote.id}` : undefined}
+    >
       {pinnedNotes.length > 0 && (
         <div className="pinned-section">
           <div className="section-header">已置顶</div>
@@ -146,3 +196,6 @@ export const NoteList: React.FC<NoteListProps> = ({
     </div>
   )
 }
+
+// 整表 memo：notes/选中集/回调未变化时（如横幅、快捷键提示引发的重渲染）跳过列表渲染
+export const NoteList = React.memo(NoteListInner)

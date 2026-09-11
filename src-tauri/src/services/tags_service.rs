@@ -12,8 +12,19 @@ impl TagsService {
         Self { conn }
     }
 
+    /// 唯一性判定用归一化：全角字符折叠到半角（U+3000 → 空格、U+FF01–FF5E 减 0xFEE0），
+    /// 再 trim + lowercase，使「ＡＢＣ」「abc」指向同一标签；既有数据不迁移，避免自动合并的删改风险。
+    /// 纯 std 实现，无新增依赖
     pub fn normalize_name(name: &str) -> String {
-        name.trim().to_lowercase()
+        name.chars()
+            .map(|c| match c {
+                '\u{3000}' => ' ',
+                '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+                _ => c,
+            })
+            .collect::<String>()
+            .trim()
+            .to_lowercase()
     }
 
     pub fn list(&self) -> Result<Vec<Tag>, String> {
@@ -89,12 +100,16 @@ impl TagsService {
         }
 
         let normalized = Self::normalize_name(trimmed_name);
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|_| "Database lock failed".to_string())?;
 
-        conn.execute(
+        // 改名与受影响便签的 FTS 同步放在同一事务：
+        // 否则同步失败会留下“标签已改、部分便签索引仍是旧名”的不一致
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+        tx.execute(
             "UPDATE tags SET name = ?, normalized_name = ? WHERE id = ?",
             params![trimmed_name, normalized, input.id],
         )
@@ -106,12 +121,12 @@ impl TagsService {
             }
         })?;
 
-        let mut stmt = conn
-            .prepare("SELECT id, name, normalized_name, color, created_at FROM tags WHERE id = ?")
-            .map_err(|e| e.to_string())?;
+        let tag = {
+            let mut stmt = tx
+                .prepare("SELECT id, name, normalized_name, color, created_at FROM tags WHERE id = ?")
+                .map_err(|e| e.to_string())?;
 
-        let tag = stmt
-            .query_row(params![input.id], |row| {
+            stmt.query_row(params![input.id], |row| {
                 Ok(Tag {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -120,9 +135,11 @@ impl TagsService {
                     created_at: row.get(4)?,
                 })
             })
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+        };
 
-        sync_notes_for_tag(&conn, &input.id)?;
+        sync_notes_for_tag(&tx, &input.id)?;
+        tx.commit().map_err(|e| e.to_string())?;
 
         Ok(tag)
     }
@@ -141,19 +158,18 @@ impl TagsService {
             let rows = stmt
                 .query_map(params![id], |row| row.get::<_, String>(0))
                 .map_err(|e| e.to_string())?;
-            rows.filter_map(|r| r.ok()).collect()
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
         };
 
-        // 2. Delete tag in transaction (cascades to note_tags)
+        // 2. 事务内删除标签（级联清理 note_tags）并同步受影响便签的 FTS：
+        // 索引同步失败随事务一起回滚，不再出现“标签关联已生效、索引仍含旧标签名”的不一致
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM tags WHERE id = ?", params![id])
             .map_err(|e| e.to_string())?;
-        tx.commit().map_err(|e| e.to_string())?;
-
-        // 3. Sync FTS for all affected notes now that tag association is gone
         for note_id in affected_note_ids {
-            crate::db::fts::sync_note_by_id(&conn, &note_id)?;
+            crate::db::fts::sync_note_by_id(&tx, &note_id)?;
         }
+        tx.commit().map_err(|e| e.to_string())?;
 
         Ok(())
     }
@@ -180,9 +196,10 @@ impl TagsService {
             .map_err(|e| e.to_string())?;
         }
 
-        tx.commit().map_err(|e| e.to_string())?;
+        // FTS 同步与标签关联同一事务：索引失败回滚整次赋值，避免“关联生效、索引陈旧”
+        crate::db::fts::sync_note_by_id(&tx, &input.note_id)?;
 
-        crate::db::fts::sync_note_by_id(&conn, &input.note_id)?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
 }

@@ -73,6 +73,8 @@ impl AttachmentService {
         let attach_id = uuid::Uuid::new_v4().to_string();
         let filename = format!("{}.{}", attach_id, ext);
         let target_path = self.attachments_dir.join(&filename);
+        // 与目标同目录同卷的临时名（uuid 前缀保证唯一），锁内 rename 才是原子操作
+        let temp_path = self.attachments_dir.join(format!("{}.tmp", filename));
 
         // 1. Calculate hash, dimensions, and metadata in memory BEFORE acquiring DB lock
         let mut hasher = Sha256::new();
@@ -92,15 +94,25 @@ impl AttachmentService {
                 .map_err(|e| format!("创建附件目录失败: {}", e))?;
         }
 
-        // 2. 持锁写盘+INSERT：与 cleanup_orphans/恢复目录交换等持锁观察者串行，
-        //    消除“行已提交但文件被并发删除”的不自愈撕裂（图片永久 404）；
-        //    持锁 30MB 写与本函数改造前的基线代价相同，插入失败删文件回滚
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|_| "Database lock failed".to_string())?;
+        // 2. 锁外写盘：30MB 写文件不持库锁，列表/搜索等 DB 操作不被写盘阻塞；
+        //    写失败（磁盘写满等）立即清理半成品 .tmp（清理失败则由启动时清理兑底）
+        fs::write(&temp_path, data).map_err(|e| {
+            let _ = fs::remove_file(&temp_path);
+            format!("保存图片失败: {}", e)
+        })?;
 
-        fs::write(&target_path, data).map_err(|e| format!("保存图片失败: {}", e))?;
+        // 3. 锁内 rename + INSERT：与 cleanup_orphans/恢复目录交换等持锁观察者串行。
+        //    同段事务内，持锁观察者看到的引用（DB 行 ↔ 物理文件）要么都不存在、要么都已就位，
+        //    消除“行已提交但文件被并发删除”的不自愈撕裂（图片永久 404）
+        let conn = self.conn.lock().map_err(|_| {
+            let _ = fs::remove_file(&temp_path);
+            "Database lock failed".to_string()
+        })?;
+
+        if let Err(e) = fs::rename(&temp_path, &target_path) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(format!("保存图片失败: {}", e));
+        }
 
         if let Err(e) = conn.execute(
             "INSERT INTO attachments (id, note_id, relative_path, mime_type, byte_size, width, height, sha256, created_at)
@@ -219,7 +231,9 @@ impl AttachmentService {
             .query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
 
-        let db_files: std::collections::HashSet<String> = rows.filter_map(|r| r.ok()).collect();
+        let db_files: std::collections::HashSet<String> = rows
+            .collect::<Result<std::collections::HashSet<String>, _>>()
+            .map_err(|e| e.to_string())?;
 
         if !self.attachments_dir.exists() {
             return Ok(0);
@@ -238,7 +252,9 @@ impl AttachmentService {
                 .map_err(|e| format!("获取文件类型失败: {}", e))?;
             if file_type.is_file() {
                 let name = entry.file_name().to_string_lossy().to_string();
-                if !db_files.contains(&name) {
+                // `.tmp` 是 save_image_bytes 锁外写盘的暂存文件（可能正被写入），
+                // 不参与孤儿判定；过期残余由启动时的 cleanup_stale_temp_files 清理
+                if !db_files.contains(&name) && !name.ends_with(".tmp") {
                     match fs::remove_file(entry.path()) {
                         Ok(()) => removed += 1,
                         Err(e) => failed_deletions.push(format!("{}: {}", name, e)),
@@ -253,6 +269,41 @@ impl AttachmentService {
                 failed_deletions.len(),
                 failed_deletions.join(", ")
             ));
+        }
+
+        Ok(removed)
+    }
+
+    /// 启动兜底：清理写入崩溃/断电残留的 `.tmp` 碎片（写入路径见 save_image_bytes）。
+    /// `.tmp` 从不被数据库引用（rename 完成后才 INSERT），因此按修改时间清理不会误删已提交附件；
+    /// 保留 1 小时窗口，避免误清正在写入的临时文件
+    pub fn cleanup_stale_temp_files(&self) -> Result<usize, String> {
+        if !self.attachments_dir.exists() {
+            return Ok(0);
+        }
+
+        let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let entries = fs::read_dir(&self.attachments_dir)
+            .map_err(|e| format!("读取附件目录失败: {}", e))?;
+
+        let mut removed = 0;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("遍历附件目录条目失败: {}", e))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".tmp") {
+                continue;
+            }
+            // 元数据/时间戳读取失败时保守跳过，留给下次启动
+            let is_stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|modified| modified < cutoff)
+                .unwrap_or(false);
+            if is_stale {
+                fs::remove_file(entry.path())
+                    .map_err(|e| format!("清理过期临时附件文件失败: {}", e))?;
+                removed += 1;
+            }
         }
 
         Ok(removed)
@@ -307,7 +358,8 @@ impl AttachmentService {
             let rows = stmt
                 .query_map([], |r| r.get::<_, String>(0))
                 .map_err(|e| e.to_string())?;
-            rows.filter_map(|r| r.ok()).collect()
+            rows.collect::<Result<std::collections::HashSet<String>, _>>()
+                .map_err(|e| e.to_string())?
         };
 
         let refs_available_in =

@@ -84,6 +84,14 @@ const ImageView: React.FC<NodeViewProps> = ({ node, selected, editor, updateAttr
     }
   }, [widthAttr])
 
+  // 卸载清理：拖拽中途切走便签时 endResize 不再执行，
+  // 不清理全局 body class 会让全屏禁选与手柄常显残留到下次拖拽
+  useEffect(() => {
+    return () => {
+      document.body.classList.remove('image-resizing')
+    }
+  }, [])
+
   const beginResize = (event: React.PointerEvent<HTMLDivElement>) => {
     const img = imgRef.current
     if (!img || event.button !== 0) {

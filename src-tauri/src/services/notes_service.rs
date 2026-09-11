@@ -81,7 +81,8 @@ impl NotesService {
 
         let mut tag_map: std::collections::HashMap<String, Vec<Tag>> =
             std::collections::HashMap::new();
-        for (tag, note_id) in rows.flatten() {
+        for row in rows {
+            let (tag, note_id) = row.map_err(|e| e.to_string())?;
             tag_map.entry(note_id).or_default().push(tag);
         }
 
@@ -208,9 +209,11 @@ impl NotesService {
             }
         }
 
-        tx.commit().map_err(|e| e.to_string())?;
+        // FTS 索引与正文本体同一事务：索引写入失败随事务整体回滚，
+        // 不再出现“正文已提交、索引缺失”的静默缺口（Transaction deref 到 Connection）
+        sync_note_by_id(&tx, &id)?;
 
-        sync_note_by_id(&conn, &id)?;
+        tx.commit().map_err(|e| e.to_string())?;
         drop(conn);
 
         if input.reuse_empty_draft == Some(true) {
@@ -287,9 +290,10 @@ impl NotesService {
             }
         }
 
-        tx.commit().map_err(|e| e.to_string())?;
+        // FTS 索引与正文同一事务：索引失败触发整体回滚，不产生索引与正文不一致的中间态
+        sync_note_by_id(&tx, &input.id)?;
 
-        sync_note_by_id(&conn, &input.id)?;
+        tx.commit().map_err(|e| e.to_string())?;
         drop(conn);
 
         // If tracked draft changed, invalidate
@@ -710,7 +714,7 @@ impl NotesService {
             let rows = stmt
                 .query_map([], |r| r.get::<_, String>(0))
                 .map_err(|e| e.to_string())?;
-            rows.filter_map(|r| r.ok()).collect()
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
         };
 
         let affected = trash_ids.len();

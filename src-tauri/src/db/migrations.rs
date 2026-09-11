@@ -62,7 +62,9 @@ pub fn verify_v1_schema_contract(conn: &Connection) -> Result<(), String> {
         .query_map([], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
 
-    let table_names: std::collections::HashSet<String> = rows.filter_map(|r| r.ok()).collect();
+    let table_names: std::collections::HashSet<String> = rows
+        .collect::<Result<std::collections::HashSet<String>, _>>()
+        .map_err(|e| e.to_string())?;
 
     let required_tables = [
         "notes",
@@ -88,8 +90,8 @@ pub fn verify_v1_schema_contract(conn: &Connection) -> Result<(), String> {
     let note_cols: Vec<String> = pragma_stmt
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
 
     let req_note_cols = [
         "id",
@@ -120,13 +122,85 @@ pub fn verify_v1_schema_contract(conn: &Connection) -> Result<(), String> {
     let tag_cols: Vec<String> = pragma_tags
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     for col in ["id", "name", "normalized_name", "color", "created_at"] {
         if !tag_cols.contains(&col.to_string()) {
             return Err(format!(
                 "随笺 v1 架构契约校验失败：tags 表缺失列 \"{}\"",
                 col
+            ));
+        }
+    }
+
+    // Verify attachments columns（列清单取自 v1 迁移建表语句）
+    let mut pragma_attachments = conn
+        .prepare("PRAGMA table_info(attachments)")
+        .map_err(|e| e.to_string())?;
+    let attachment_cols: Vec<String> = pragma_attachments
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    for col in [
+        "id",
+        "note_id",
+        "relative_path",
+        "mime_type",
+        "byte_size",
+        "width",
+        "height",
+        "sha256",
+        "created_at",
+    ] {
+        if !attachment_cols.contains(&col.to_string()) {
+            return Err(format!(
+                "随笺 v1 架构契约校验失败：attachments 表缺失列 \"{}\"",
+                col
+            ));
+        }
+    }
+
+    // Verify note_tags columns
+    let mut pragma_note_tags = conn
+        .prepare("PRAGMA table_info(note_tags)")
+        .map_err(|e| e.to_string())?;
+    let note_tag_cols: Vec<String> = pragma_note_tags
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    for col in ["note_id", "tag_id"] {
+        if !note_tag_cols.contains(&col.to_string()) {
+            return Err(format!(
+                "随笺 v1 架构契约校验失败：note_tags 表缺失列 \"{}\"",
+                col
+            ));
+        }
+    }
+
+    // Verify foreign keys：v1 建表已声明外键，故逐条校验；
+    // foreign_key_list 返回列序为 id, seq, table, from, to, on_update, on_delete, match
+    let fk_specs = [
+        ("attachments", "note_id", "notes"),
+        ("note_tags", "note_id", "notes"),
+        ("note_tags", "tag_id", "tags"),
+    ];
+    for (table, from_col, ref_table) in fk_specs {
+        let mut fk_stmt = conn
+            .prepare(&format!("PRAGMA foreign_key_list({})", table))
+            .map_err(|e| e.to_string())?;
+        let fks: Vec<(String, String)> = fk_stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(2)?, row.get::<_, String>(3)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        if !fks.iter().any(|(t, f)| t == ref_table && f == from_col) {
+            return Err(format!(
+                "随笺 v1 架构契约校验失败：{} 表缺失外键 {} → {}(id)",
+                table, from_col, ref_table
             ));
         }
     }
@@ -138,8 +212,8 @@ pub fn verify_v1_schema_contract(conn: &Connection) -> Result<(), String> {
     let setting_cols: Vec<String> = pragma_settings
         .query_map([], |row| row.get::<_, String>(1))
         .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     for col in ["key", "value_json", "updated_at"] {
         if !setting_cols.contains(&col.to_string()) {
             return Err(format!(
@@ -150,13 +224,17 @@ pub fn verify_v1_schema_contract(conn: &Connection) -> Result<(), String> {
     }
 
     // Verify notes_fts is FTS5 with trigram
-    let fts_sql: Option<String> = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='notes_fts'",
-            [],
-            |r| r.get(0),
-        )
-        .ok();
+    // 区分 NoRows 与真实错误：NoRows 才按“缺失虚拟表”处理；
+    // 其他错误（如元数据读取失败）按真实原因报告，避免误导排障方向
+    let fts_sql: Option<String> = match conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='notes_fts'",
+        [],
+        |r| r.get(0),
+    ) {
+        Ok(sql) => Some(sql),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e.to_string()),
+    };
 
     if let Some(sql) = fts_sql {
         let sql_lower = sql.to_lowercase();
@@ -191,7 +269,9 @@ pub fn run_migrations(conn: &mut Connection) -> Result<(), String> {
         let applied_rows = stmt
             .query_map([], |row| row.get::<_, i64>(0))
             .map_err(|e| e.to_string())?;
-        applied_rows.filter_map(|r| r.ok()).collect()
+        applied_rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
     };
 
     check_migrations_integrity(&applied_versions, LATEST_MIGRATION_VERSION)?;

@@ -47,16 +47,20 @@ pub fn sync_note_by_id(conn: &Connection, note_id: &str) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
 
-    let note_row = stmt
-        .query_row(params![note_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .ok();
+    // 区分“无该行”与真实查询错误：无行（便签已删）走删索引分支，
+    // 其他错误（预留列不符/表损坏等）必须上抛，不能误当成“没这行”把索引删掉
+    let note_row = match stmt.query_row(params![note_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    }) {
+        Ok(row) => Some(row),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e.to_string()),
+    };
 
     if let Some((id, title, plain_text, tags_text)) = note_row {
         sync_note(conn, &id, &title, &plain_text, &tags_text)?;
@@ -76,7 +80,9 @@ pub fn sync_notes_for_tag(conn: &Connection, tag_id: &str) -> Result<(), String>
         .query_map(params![tag_id], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
 
-    let note_ids: Vec<String> = rows.filter_map(|r| r.ok()).collect();
+    let note_ids: Vec<String> = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     for note_id in note_ids {
         sync_note_by_id(conn, &note_id)?;
     }

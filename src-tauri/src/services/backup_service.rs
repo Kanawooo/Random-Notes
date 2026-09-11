@@ -1160,6 +1160,10 @@ impl BackupService {
         let mut restored_tags_count = 0;
         let mut restored_attach_count = 0;
         let restored_notes_count = verified_note_count;
+        // 备份可能同时含旧算法下合法共存的同名标签（如「ＡＢＣ」与「abc」，新归一算法判定同名）。
+        // 恢复时按归一结果合并：冲突标签复用已插入标签的 id，note_tags 关联指向复用 id，
+        // 防止 UNIQUE(normalized_name) 冲突回滚整次恢复，且便签标签关联不丢。
+        let mut restored_tag_ids: HashMap<String, String> = HashMap::new();
 
         let tx_result: Result<(), String> = (|| {
             let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1178,6 +1182,10 @@ impl BackupService {
             if let Some(tags) = &manifest.tags {
                 for tag in tags {
                     let norm = TagsService::normalize_name(&tag.name);
+                    if restored_tag_ids.contains_key(&norm) {
+                        // 与该归一标签已恢复的条目合并：不再插入，后续便签标签关联统一指向复用 id
+                        continue;
+                    }
                     let safe_color = Self::sanitize_hex_color(&tag.color);
                     let created_at = tag
                         .created_at
@@ -1188,6 +1196,7 @@ impl BackupService {
                         params![tag.id, tag.name, norm, safe_color, created_at],
                     )
                     .map_err(|e| e.to_string())?;
+                    restored_tag_ids.insert(norm, tag.id.clone());
                     restored_tags_count += 1;
                 }
             }
@@ -1224,20 +1233,29 @@ impl BackupService {
 
                 for tag in &note.tags {
                     let norm = TagsService::normalize_name(&tag.name);
-                    let safe_color = Self::sanitize_hex_color(&tag.color);
-                    let created_at = tag
-                        .created_at
-                        .clone()
-                        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-                    tx.execute(
-                        "INSERT OR IGNORE INTO tags (id, name, normalized_name, color, created_at) VALUES (?, ?, ?, ?, ?)",
-                        params![tag.id, tag.name, norm, safe_color, created_at],
-                    )
-                    .map_err(|e| e.to_string())?;
+                    // 归一后与已恢复标签同类（含 manifest 内合并）时复用其 id；否则插入并登记，
+                    // 避免 INSERT 被 UNIQUE 忽略后 note_tags 仍引用旧 id 造成关联丢失
+                    let effective_tag_id = match restored_tag_ids.get(&norm) {
+                        Some(existing_id) => existing_id.clone(),
+                        None => {
+                            let safe_color = Self::sanitize_hex_color(&tag.color);
+                            let created_at = tag
+                                .created_at
+                                .clone()
+                                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+                            tx.execute(
+                                "INSERT OR IGNORE INTO tags (id, name, normalized_name, color, created_at) VALUES (?, ?, ?, ?, ?)",
+                                params![tag.id, tag.name, norm, safe_color, created_at],
+                            )
+                            .map_err(|e| e.to_string())?;
+                            restored_tag_ids.insert(norm, tag.id.clone());
+                            tag.id.clone()
+                        }
+                    };
 
                     tx.execute(
                         "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)",
-                        params![note.id, tag.id],
+                        params![note.id, effective_tag_id],
                     )
                     .map_err(|e| e.to_string())?;
                 }
